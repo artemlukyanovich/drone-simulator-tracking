@@ -26,7 +26,8 @@
 
 ```
 ai_drones/                         ← локальный workspace (НЕ git-репозиторий)
-├── assets/                        ← данные, видео, картинки — локально, НЕ в git
+├── project_1/assets/                     ← данные, видео, картинки проекта 1 — локально, НЕ в git
+├── project_2/assets/                     ← данные, видео, картинки проекта 2 — локально, НЕ в git
 ├── project_1/real-time-object-counter/   ← отдельный git-репо (CV-лаборатория)
 └── project_2/drone-simulator-tracking/   ← ЭТОТ проект, отдельный git-репо
 ```
@@ -175,8 +176,14 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
 
 **Фаза 0 — окружение и версии**
 1. Зафиксировать совместимую тройку PX4 + Gazebo + ROS2 LTS, записать в `configs/simulator/`.
-2. Поднять отдельный venv / окружение проекта. `git init` + новый remote.
+2. Поднять отдельный venv проекта поверх системного python3 (3.10) с `--system-site-packages` —
+   скриптом `scripts/setup_venv.sh` (идемпотентен, ставит зависимости из `requirements.txt`).
+   `git init` + новый remote.
 3. Базовый `.gitignore`, `README.md`, `CLAUDE.md`.
+4. Установить системный стек (ROS2 Humble, Gazebo Harmonic, ros_gz) через apt + собрать
+   Micro-XRCE-DDS-Agent из исходников (apt-пакета нет, snap на Mint заблокирован) —
+   скриптом `scripts/install_system_deps.sh` (форсит codename `jammy`). Это база для Фазы 2;
+   pip-зависимости (`torch`, `ultralytics`) идут в venv через `requirements.txt`.
 
 **Фаза 1 — каркас ROS2**
 4. Оформить `src/*` как настоящие ament-пакеты (`package.xml`, `setup.py`).

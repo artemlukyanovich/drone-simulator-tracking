@@ -55,6 +55,30 @@ Open **this folder** as the project root in PyCharm and Claude Code — it is th
 the venv root, and the colcon workspace root. Do not open the parent `ai_drones/` as the
 project root (see `docs/project_plan.md` §7).
 
+## Environment setup
+
+Native install (no Docker for local dev): system ROS2 Humble from apt + a project
+**venv** layered on top. We use `venv`, **not conda** — conda ships its own interpreter/ABI
+and breaks linking against the system ROS2. The venv is created with `--system-site-packages`
+so nodes see both the system `rclpy` and the pip deps (`torch`/`ultralytics`).
+
+```bash
+# 1) system stack: ROS2 Humble + Gazebo Harmonic + bridges (apt, run once)
+scripts/install_system_deps.sh
+
+# 2) project venv + pip deps, layered on top (idempotent)
+scripts/setup_venv.sh
+
+# activate for work — order matters: ROS2 first, venv on top
+source /opt/ros/humble/setup.bash
+source .venv/bin/activate
+```
+
+Pip dependencies live in [`requirements.txt`](requirements.txt); the system stack
+is installed by `scripts/install_system_deps.sh` (it forces the `jammy` codename, since
+Mint reports its own). See `docs/project_plan.md` §4/§8 and `configs/simulator/stack.md`
+for details.
+
 ## How to run
 
 To be defined as packages are implemented (Phase 1). The general ROS2 flow will be:

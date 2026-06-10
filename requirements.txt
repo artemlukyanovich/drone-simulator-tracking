@@ -1,0 +1,26 @@
+# Pip-зависимости проекта — ставятся в .venv ПОВЕРХ системного ROS2.
+# Системные пакеты (rclpy, ros_gz_*, cv_bridge, image_transport) приходят из apt
+# и тут НЕ перечисляются. Источник истины по стеку — docs/project_plan.md §4, Р7.
+#
+# Установка:  scripts/setup_venv.sh   (или вручную:  pip install -r requirements.txt)
+
+# --- КРИТИЧНО: numpy остаётся в ветке 1.x ---
+# ROS2 Humble и cv_bridge собраны под numpy 1.x. numpy 2.x ломает их ABI
+# (ошибки вида "module compiled against API version ... but this version ...").
+# torch/ultralytics по умолчанию тянут numpy 2.x — поэтому фиксируем потолок.
+numpy<2
+
+# --- Детектор (логика переносится из project_1) ---
+ultralytics>=8.0.0
+
+# --- PyTorch ---
+# На Linux дефолтные колёса с PyPI идут уже с CUDA 12.x — подходят под RTX 3050 Ti
+# (драйвер 580). ultralytics притянет torch сам, но фиксируем явно для контроля.
+# Если pip поставит CPU-сборку — переустановить с GPU-индексом:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+
+# --- Утилиты ---
+# opencv-python ultralytics тянет транзитивно; перечисляем явно как прямую зависимость.
+opencv-python
