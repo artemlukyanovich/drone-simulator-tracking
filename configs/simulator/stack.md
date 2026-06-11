@@ -22,7 +22,20 @@
   и ломает линковку против системного ROS2.
 - pip-зависимости (`torch`, `ultralytics`, `opencv-python`) — в `requirements.txt`.
   **numpy зафиксирован `<2`**: ROS2 Humble / cv_bridge собраны под numpy 1.x.
-- Порядок активации: `source /opt/ros/humble/setup.bash` → активировать venv (`.venv/bin/activate`).
+- Активация для работы — нужны **оба слоя**, но **порядок между ними не важен**
+  (проверено 2026-06-11: `venv→ROS2` и `ROS2→venv` дают идентичный `sys.path` — тот же
+  python из venv, numpy 1.26.4 из venv, rclpy из `/opt/ros/humble`). Минимальный набор:
+  ```bash
+  source /opt/ros/humble/setup.bash   # rclpy + PYTHONPATH/LD_LIBRARY_PATH/AMENT_PREFIX_PATH
+  source install/setup.bash           # пакеты drone_* (после colcon build)
+  source .venv/bin/activate           # torch/ultralytics; в терминале PyCharm уже активен
+  ```
+  Маркер готовности: `echo $ROS_DISTRO` → `humble`. Единственное жёсткое «нельзя» —
+  **conda** (свой интерпретатор/ABI ломает линковку против системного ROS2); обычный
+  `venv --system-site-packages` безопасен в любом порядке.
+- `source install/setup.bash` пересорсить **обязательно** в новом терминале и при изменении
+  состава пакетов (добавил/переименовал). При инкрементальной пересборке того же набора в
+  том же терминале — не обязательно (env указывает на те же пути), но привычка полезна.
 
 ## Проверено на машине (Фаза 0, 2026-06-10)
 

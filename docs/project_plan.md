@@ -131,9 +131,11 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
 
 Запуск (общая схема): `colcon build` → `source install/setup.bash` → `ros2 launch drone_bringup ...`.
 
-> ❗ Каждый каталог под `src/` со временем должен стать настоящим **ament-пакетом**
-> (`package.xml` + `setup.py` + вложенный python-пакет с тем же именем). Сейчас это
-> placeholder-папки с `.gitkeep` — пакеты оформляем на Фазе 1.
+> ✅ Фаза 1 (2026-06-10): все четыре каталога под `src/` оформлены как настоящие
+> **ament_python-пакеты** (`package.xml` format 3 + `setup.py` + `setup.cfg` +
+> `resource/<pkg>` + вложенный python-пакет). `drone_perception`/`drone_control`
+> несут ноды-заглушки (heartbeat-логгеры), `drone_simulator` — каркас без нод (Фаза 2),
+> `drone_bringup` — `launch/tracking_demo.launch.py`. `colcon build` зелёный.
 
 ## 7. Принципы реализации (для человека и ИИ-агента)
 
@@ -166,6 +168,27 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
 - Если нужно подсмотреть код project_1 — открываем его **отдельной** сессией/окном, не оборачивая
   оба проекта в один корень.
 
+**IDE: чтобы PyCharm видел `rclpy` / ROS2 (важная ловушка)**
+- `rclpy` и прочие ROS2-пакеты лежат в `/opt/ros/humble/...` и подключаются **через
+  `PYTHONPATH`** (его ставит `source /opt/ros/humble/setup.bash`), а **не** через site-packages.
+  Поэтому флаг venv `--system-site-packages` их НЕ открывает, и PyCharm, запущенный «голым»
+  (из меню/иконки), показывает `No module named 'rclpy'`. Это ожидаемо.
+- **Принятое решение (2026-06-10): Вариант 2 — вручную добавить ROS2-пути в интерпретатор.**
+  `Settings → Project → Python Interpreter → Show All → выбрать .venv → Interpreter Paths
+  (значок дерева) → +` и добавить:
+  `/opt/ros/humble/local/lib/python3.10/dist-packages` и
+  `/opt/ros/humble/lib/python3.10/site-packages`. Это снимает подсветку и даёт автодополнение.
+- ⚠️ **Это только индексатор IDE (подсветка/автодополнение), не окружение выполнения.** Запуск
+  кода (терминал, `ros2 run`/`ros2 launch`, Run-конфиги) **по-прежнему требует** `source
+  /opt/ros/humble/setup.bash` → `source install/setup.bash`, активный `.venv` — необходимость
+  та же, что и без правки путей (рантайму нужны `LD_LIBRARY_PATH`/`AMENT_PREFIX_PATH`,
+  а не пути индексатора). Порядок между этими source-командами не важен — нужны лишь оба
+  слоя; детали и проверка — в `configs/simulator/stack.md`. Минус подхода: при добавлении новых ROS-пакетов (напр. `px4_msgs`) их
+  пути в интерпретатор придётся дописывать руками.
+- Альтернатива (не выбрана): запускать IDE через `scripts/launch_pycharm.sh`, который сорсит
+  окружение в сам процесс PyCharm — тогда и Run-конфиги, и встроенный терминал работают без
+  ручного source, а индексатор видит всё разом. Оставлено на потом.
+
 **Общее**
 - Документация — на русском, идентификаторы/код — на английском.
 - Любое значимое архитектурное решение — фиксируем в §3 этого файла.
@@ -185,9 +208,12 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
    скриптом `scripts/install_system_deps.sh` (форсит codename `jammy`). Это база для Фазы 2;
    pip-зависимости (`torch`, `ultralytics`) идут в venv через `requirements.txt`.
 
-**Фаза 1 — каркас ROS2**
-4. Оформить `src/*` как настоящие ament-пакеты (`package.xml`, `setup.py`).
-5. Пустые ноды-заглушки + первый launch-файл в `drone_bringup`, проверить `colcon build`.
+**Фаза 1 — каркас ROS2** ✅ (2026-06-10)
+4. ✅ Оформить `src/*` как настоящие ament-пакеты (`package.xml`, `setup.py`).
+5. ✅ Пустые ноды-заглушки (heartbeat-логгеры) + первый launch-файл
+   `tracking_demo.launch.py` в `drone_bringup`. `colcon build` зелёный; `ros2 launch`
+   поднимает `/detector_node` и `/follower_node`. Кастомный интерфейс
+   `/perception/target` отложен до Фазы 3 (пока нодам нечего публиковать).
 
 **Фаза 2 — де-риск симулятора (раньше пайплайна!)**
 6. Запустить PX4 SITL + Gazebo (`scripts/run_px4_sitl.sh`), взлёт по дефолтной миссии.

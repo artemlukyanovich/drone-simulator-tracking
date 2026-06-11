@@ -16,10 +16,14 @@ the detailed rationale.
 
 ## Current status
 
-🚧 **Early scaffold — no runtime code yet.** Only the directory skeleton, docs, and repo
-metadata exist. The folders under `src/` are placeholders, **not yet valid ament packages**
-(`package.xml` + `setup.py` come in Phase 1). Do not assume any command below works until
-the corresponding phase is implemented — confirm against `docs/project_plan.md` §8.
+🚧 **Phase 1 done (2026-06-10) — ROS2 skeleton builds and runs.** All four `src/*` are
+real ament_python packages. `drone_perception`/`drone_control` ship stub heartbeat nodes
+(`detector_node`/`follower_node`); `drone_simulator` is a node-less skeleton (filled in
+Phase 2); `drone_bringup` has `tracking_demo.launch.py`. `colcon build` is green and
+`ros2 launch drone_bringup tracking_demo.launch.py` brings both nodes up. No simulator,
+perception, or control logic yet — those land in Phases 2–3. The `/perception/target`
+custom interface is deferred to Phase 3. Confirm capabilities against
+`docs/project_plan.md` §8 before assuming a later-phase command works.
 
 ## Key decisions (see project_plan.md §3 for rationale)
 

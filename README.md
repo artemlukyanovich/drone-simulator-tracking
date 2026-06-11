@@ -69,9 +69,12 @@ scripts/install_system_deps.sh
 # 2) project venv + pip deps, layered on top (idempotent)
 scripts/setup_venv.sh
 
-# activate for work — order matters: ROS2 first, venv on top
+# activate for work — both layers must be active; order between them does NOT matter
+# (in the PyCharm terminal the venv is already active, just source ROS2 on top).
+# Hard rule: never conda — its ABI breaks linking against the system ROS2.
 source /opt/ros/humble/setup.bash
 source .venv/bin/activate
+# check: `echo $ROS_DISTRO` should print `humble`
 ```
 
 Pip dependencies live in [`requirements.txt`](requirements.txt); the system stack
@@ -81,12 +84,15 @@ for details.
 
 ## How to run
 
-To be defined as packages are implemented (Phase 1). The general ROS2 flow will be:
+Phase 1 skeleton works today — `colcon build` is green and the launch file brings up two
+stub heartbeat nodes (`detector_node`, `follower_node`). No simulator/perception/control
+logic yet (Phases 2–3).
 
 ```bash
 colcon build
-source install/setup.bash
+source install/setup.bash    # re-source in a new shell, or after adding/renaming packages
 ros2 launch drone_bringup tracking_demo.launch.py
+# verify in another sourced terminal: `ros2 node list` → /detector_node, /follower_node
 ```
 
 ## Roadmap
