@@ -16,14 +16,23 @@ the detailed rationale.
 
 ## Current status
 
-🚧 **Phase 1 done (2026-06-10) — ROS2 skeleton builds and runs.** All four `src/*` are
-real ament_python packages. `drone_perception`/`drone_control` ship stub heartbeat nodes
-(`detector_node`/`follower_node`); `drone_simulator` is a node-less skeleton (filled in
-Phase 2); `drone_bringup` has `tracking_demo.launch.py`. `colcon build` is green and
-`ros2 launch drone_bringup tracking_demo.launch.py` brings both nodes up. No simulator,
-perception, or control logic yet — those land in Phases 2–3. The `/perception/target`
-custom interface is deferred to Phase 3. Confirm capabilities against
-`docs/project_plan.md` §8 before assuming a later-phase command works.
+🚧 **Phase 2 done (2026-06-11) — simulator de-risked (PX4 SITL + DDS bridge + camera).**
+PX4 **v1.15.4** SITL (`gz_x500_mono_cam`) flies in Gazebo Harmonic; the uXRCE-DDS bridge
+exposes `/fmu/*` (telemetry at 100 Hz) via `px4_msgs` (`release/1.15`); the camera reaches
+ROS2 as `/camera/image` at ~30 Hz (640×480 rgb8) — the Phase 2 go/no-go gate is **green**.
+PX4-Autopilot and px4_msgs are external code (in `~/src/` and `src/px4_msgs/`, both
+git-ignored, fetched per `docs/phase2_setup.md`). Still **no perception/control logic** and
+no `/perception/target` interface — those are Phase 3.
+
+Run the sim (two terminals, env sourced as below):
+```bash
+scripts/run_px4_sitl.sh                       # PX4 SITL + Gazebo (separate make process)
+ros2 launch drone_simulator sim.launch.py     # XRCE agent + camera bridge (ROS2 side)
+```
+Phase 1 still holds: `tracking_demo.launch.py` brings up the stub heartbeat nodes
+(`detector_node`/`follower_node`). Full reproduction without an agent:
+**`docs/phase2_setup.md`**. Confirm capabilities against `docs/project_plan.md` §8 before
+assuming a later-phase command works.
 
 ## Key decisions (see project_plan.md §3 for rationale)
 
@@ -79,7 +88,9 @@ Gazebo (physics + camera) → ros_gz_bridge → /camera/image
   → PX4 SITL → motors in Gazebo
 ```
 
-## First risk to close
+## First risk (closed in Phase 2)
 
-PX4 / Gazebo / ROS2-distro versions are tightly coupled. Pin a working triple and record it
-in `configs/simulator/` and `docs/project_plan.md` §11 **before** writing code.
+PX4 / Gazebo / ROS2-distro versions are tightly coupled. The working stack is pinned and
+verified: ROS2 **Humble** + Gazebo **Harmonic 8.13** + PX4 **v1.15.4** + px4_msgs
+`release/1.15` + Micro-XRCE-DDS-Agent v2.4.3 — recorded in `configs/simulator/stack.md` and
+`docs/project_plan.md` §11, with full reproduction steps in `docs/phase2_setup.md`.

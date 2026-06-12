@@ -1,0 +1,19 @@
+# Конфиг ros_gz_bridge (parameter_bridge): проброс камеры Gazebo → ROS2.
+#
+# Модель x500_mono_cam: сенсор `imager` публикует в gz-топик `camera` (30 Гц),
+# camera_info — в `camera_info`. Мост перекладывает их в стандартные ROS2-топики.
+# Имена/типы gz подтверждены через `gz topic -l` / `gz topic -i` (см. docs/phase2_setup.md).
+#
+# Формат — список правил ros_gz_bridge (YAML). direction GZ_TO_ROS: только из Gazebo в ROS.
+
+- ros_topic_name: "/camera/image"
+  gz_topic_name: "/camera"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/camera_info"
+  gz_topic_name: "/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS

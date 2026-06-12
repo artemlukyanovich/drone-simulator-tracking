@@ -3,6 +3,10 @@ build/
 install/
 log/
 
+# --- Vendored external ROS2 packages (fetched by scripts, pinned in stack.md) ---
+# px4_msgs — клонируется под релиз PX4 (см. docs/phase2_setup.md), не наш код.
+src/px4_msgs/
+
 # --- Python ---
 __pycache__/
 *.py[cod]

@@ -215,10 +215,17 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
    поднимает `/detector_node` и `/follower_node`. Кастомный интерфейс
    `/perception/target` отложен до Фазы 3 (пока нодам нечего публиковать).
 
-**Фаза 2 — де-риск симулятора (раньше пайплайна!)**
-6. Запустить PX4 SITL + Gazebo (`scripts/run_px4_sitl.sh`), взлёт по дефолтной миссии.
-7. Поднять uXRCE-DDS мост, убедиться что PX4-топики видны в `ros2 topic list`.
-8. Пробросить камеру Gazebo через `ros_gz_bridge`, увидеть кадр в `/camera/image`. ← go/no-go.
+**Фаза 2 — де-риск симулятора (раньше пайплайна!)** ✅ (2026-06-11)
+6. ✅ PX4 SITL + Gazebo (`scripts/run_px4_sitl.sh`, модель `gz_x500_mono_cam`): SITL дошёл до
+   `Ready for takeoff!`, `commander takeoff` → взлёт (`vehicle_local_position.z ≈ −1.96`).
+7. ✅ uXRCE-DDS мост (`scripts/run_xrce_agent.sh` + `px4_msgs` `release/1.15` в `src/`):
+   **43** `/fmu/*` топика в `ros2 topic list`, телеметрия `vehicle_local_position` на 100 Гц.
+8. ✅ Камера через `ros_gz_bridge` (`drone_simulator/launch/sim.launch.py` +
+   `configs/simulator/camera_bridge.yaml`): `/camera/image` на ~30 Гц, 640×480 rgb8. ← go/no-go **пройден**.
+
+> Зафиксированный стек Фазы 2: PX4 **v1.15.4** (`99c40407ff`, в `~/src/`, вне git),
+> px4_msgs `release/1.15` (`a1045ec`), Micro-XRCE-DDS-Agent v2.4.3, Gazebo Harmonic 8.13.
+> Пошаговое воспроизведение без ИИ — **`docs/phase2_setup.md`**. Детали стека — `configs/simulator/stack.md`.
 
 **Фаза 3 — MVP «вижу → двигаюсь»**
 9. `detector_node`: подписка на `/camera/image`, YOLO, публикация bbox + смещения от центра кадра.
@@ -254,7 +261,8 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
 
 - [x] Зафиксировать версии: ROS2 **Humble**, Gazebo **Harmonic**, PX4 **v1.15.x** (см. §4).
 - [x] Выбрать окружение: **нативно — системный ROS2 + venv `--system-site-packages`** (Р7).
-- [ ] Подтвердить точное соответствие PX4 ↔ Gazebo (Harmonic vs Garden) по docs.px4.io при установке.
+- [x] Подтвердить точное соответствие PX4 ↔ Gazebo: **PX4 v1.15.4 собирается и летает на Gazebo
+      Harmonic 8.13** (Фаза 2, 2026-06-11); мост — `ros-humble-ros-gzharmonic`.
 - [ ] Определить, какие именно модули из project_1 переносим первыми (детектор — точно).
 - [ ] Решить: системный ROS2 + venv, или Docker — **позже**, при удалённом развёртывании/CI.
 - [ ] Решить набор классов/целей, которые дрон будет отслеживать в симуляторе.
