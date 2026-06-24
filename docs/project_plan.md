@@ -227,11 +227,17 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
 > px4_msgs `release/1.15` (`a1045ec`), Micro-XRCE-DDS-Agent v2.4.3, Gazebo Harmonic 8.13.
 > Пошаговое воспроизведение без ИИ — **`docs/phase2_setup.md`**. Детали стека — `configs/simulator/stack.md`.
 
-**Фаза 3 — MVP «вижу → двигаюсь»**
+**Фаза 3 — MVP «вижу → двигаюсь»** (детальный план — `docs/phase3_setup.md`)
 9. `detector_node`: подписка на `/camera/image`, YOLO, публикация bbox + смещения от центра кадра.
 10. `follower_node`: непрерывный offboard-цикл, P-регулятор:
     - target левее/правее центра → yaw/смещение в сторону;
     - bbox маленький → вперёд (приблизиться); большой → назад (отдалиться).
+
+> Решения Фазы 3 (детали и обоснование — `docs/phase3_setup.md` §2): цель — **движущийся
+> человек** (Gazebo `actor`, класс COCO `person`); интерфейс — **свой
+> `drone_interfaces/Target.msg`** (нормализованные offset+размер), не `vision_msgs`; степени
+> свободы MVP — **yaw + вперёд/назад, высота фикс.**; координаты setpoint'ов — **body-frame
+> velocity**. Детектор переносится из project_1 как логика (без трекинга/ReID — Фаза 4).
 
 **Фаза 4 — углубление**
 11. P → PID (`configs/control/`), логирование телеметрии в `outputs/telemetry/`.
@@ -263,6 +269,8 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
 - [x] Выбрать окружение: **нативно — системный ROS2 + venv `--system-site-packages`** (Р7).
 - [x] Подтвердить точное соответствие PX4 ↔ Gazebo: **PX4 v1.15.4 собирается и летает на Gazebo
       Harmonic 8.13** (Фаза 2, 2026-06-11); мост — `ros-humble-ros-gzharmonic`.
-- [ ] Определить, какие именно модули из project_1 переносим первыми (детектор — точно).
+- [x] Определить, какие именно модули из project_1 переносим первыми: **детектор**
+      (`ObjectDetector` из `src/detector.py`); трекинг/ReID — Фаза 4 (Фаза 3, см. `phase3_setup.md`).
 - [ ] Решить: системный ROS2 + venv, или Docker — **позже**, при удалённом развёртывании/CI.
-- [ ] Решить набор классов/целей, которые дрон будет отслеживать в симуляторе.
+- [x] Решить набор классов/целей: **класс `person`** — дрон следует за движущимся человеком
+      (Gazebo `actor`) (Фаза 3, см. `phase3_setup.md` §2).
