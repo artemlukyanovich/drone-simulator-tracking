@@ -16,23 +16,35 @@ the detailed rationale.
 
 ## Current status
 
-🚧 **Phase 2 done (2026-06-11) — simulator de-risked (PX4 SITL + DDS bridge + camera).**
-PX4 **v1.15.4** SITL (`gz_x500_mono_cam`) flies in Gazebo Harmonic; the uXRCE-DDS bridge
-exposes `/fmu/*` (telemetry at 100 Hz) via `px4_msgs` (`release/1.15`); the camera reaches
-ROS2 as `/camera/image` at ~30 Hz (640×480 rgb8) — the Phase 2 go/no-go gate is **green**.
-PX4-Autopilot and px4_msgs are external code (in `~/src/` and `src/px4_msgs/`, both
-git-ignored, fetched per `docs/phase2_setup.md`). Still **no perception/control logic** and
-no `/perception/target` interface — those are Phase 3.
+🚧 **Phase 3 in progress — MVP "see → move". Detail & source of truth:
+[`docs/phase3_setup.md`](docs/phase3_setup.md).** (Phase 2 done: PX4 **v1.15.4** SITL
+`gz_x500_mono_cam` flies in Gazebo Harmonic, uXRCE-DDS bridge exposes `/fmu/*` at 100 Hz via
+`px4_msgs` `release/1.15`, camera → `/camera/image` ~30 Hz.)
 
-Run the sim (two terminals, env sourced as below):
-```bash
-scripts/run_px4_sitl.sh                       # PX4 SITL + Gazebo (separate make process)
-ros2 launch drone_simulator sim.launch.py     # XRCE agent + camera bridge (ROS2 side)
-```
-Phase 1 still holds: `tracking_demo.launch.py` brings up the stub heartbeat nodes
-(`detector_node`/`follower_node`). Full reproduction without an agent:
-**`docs/phase2_setup.md`**. Confirm capabilities against `docs/project_plan.md` §8 before
-assuming a later-phase command works.
+**Increments 0–3 done (✅)** — perception/control logic now exists:
+- `drone_interfaces/Target.msg` — custom interface (`detected`, normalized `offset_x/y`, `area_ratio`).
+- Own world `src/drone_simulator/worlds/follow_target.sdf` (Fuel "Standing person"), launched
+  **standalone**: `WORLD=… scripts/run_px4_sitl.sh` (PX4 attaches via `PX4_GZ_STANDALONE`;
+  `<world>` must be named `default`).
+- `detector_node` — YOLO over `/camera/image` → `/perception/target` (+ `/perception/image`).
+- `follower_node` — offboard loop + P-controller, **validated with a fake target** (arms,
+  takes off, reacts correctly).
+
+**Increment 4 is next:** wire `detector_node` + `follower_node` together in
+`tracking_demo.launch.py` (currently reverted to the Phase-1 stub launch) so the drone tracks
+the real person in the world. Start it in a fresh session; see `docs/phase3_setup.md` §8 (row 4).
+
+⚠️ **Open issue (increment 4):** running the *full* pipeline (camera bridge + detector +
+follower together) was observed to block arming (`commander check` → `Compass Sensor 0
+missing`, `sensor_mag never published`); the controller *without* the detector arms and flies
+fine after a clean `scripts/stop_sim.sh`. Cause not finalized — see `docs/phase3_setup.md` §9.
+
+⚠️ **Build with `scripts/build.sh`, not bare `colcon build`** — nodes with pip deps
+(`torch`/`ultralytics`) need the venv-python shebang (see `docs/phase3_setup.md` §12).
+
+PX4-Autopilot and px4_msgs are external code (in `~/src/` and `src/px4_msgs/`, both
+git-ignored, fetched per `docs/phase2_setup.md`). Confirm capabilities against
+`docs/phase3_setup.md` and `docs/project_plan.md` §8 before assuming a command works.
 
 ## Key decisions (see project_plan.md §3 for rationale)
 

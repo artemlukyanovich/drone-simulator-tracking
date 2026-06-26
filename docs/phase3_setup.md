@@ -11,8 +11,10 @@
 > Статус: 🚧 **в реализации** (2026-06-26). Инкременты 0 ✅ (`drone_interfaces`+`Target.msg`),
 > 1 ✅ (свой мир + standalone, §11), 2 ✅ (`detector_node`: YOLO → `/perception/target`, §12),
 > 3 ✅ (`follower_node`: offboard-цикл + P-регулятор, взлёт и реакция на фейк подтверждены, §13).
-> Осталось — инкремент 4: полный пайплайн «детектор+контроллер» в `tracking_demo.launch.py`,
-> дрон наводится на реального человека (начнём в новой сессии).
+> Осталось — инкремент 4: связать детектор+контроллер в `tracking_demo.launch.py` (сейчас он
+> откатан к заглушке Фазы 1), дрон наводится на реального человека. Начнём в новой сессии.
+> ⚠️ Известная проблема: полный пайплайн пока **не армится** (`Compass Sensor 0 missing`) —
+> причина не установлена, см. §9.
 
 ---
 
@@ -200,16 +202,41 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
   впереди по +X.
 - **Offboard >2 Гц и порядок arm/offboard** (§5) — главные грабли управления PX4.
 - **Кастомные msg → `ament_cmake`** (§3), не `ament_python` — это не ошибка структуры.
+- **🔴 ОТКРЫТО (инкр. 4): полный пайплайн не армится.** При одновременном запуске
+  камера-моста + `detector_node` + `follower_node` (`tracking_demo`) PX4 SITL переставал
+  армиться: `commander check` → `Preflight Fail: Compass Sensor 0 missing` / `ekf2 missing
+  data`, `listener sensor_mag` → «never published». Контроллер **без** детектора
+  (`follower_demo`: sim + только `follower_node`) армится и летает стабильно после чистого
+  `scripts/stop_sim.sh`. **Причина не установлена.** Гипотезы на проверку при возобновлении
+  инкр. 4: ресурсный контеншн рендера на гибридной графике (lockstep — если шаг Gazebo
+  стопорится, в PX4 разом пропадают ВСЕ сенсоры), тайминг старта нод, остаточные процессы.
+  `GPU=nvidia` НЕ оказался решающим (`Ready for takeoff!` появлялся и без него). Кандидаты на
+  лечение: запускать детектор позже (TimerAction) / детектор на CPU (`device: cpu`) /
+  `GPU=nvidia` — но сперва **локализовать причину**, а не лечить наугад.
 
 ## 10. Проверка и визуализация (как «пощупать» результат)
 
 > 📋 Базовые команды проверки управления (pxh + ROS2, расшифровка кодов, типовые сценарии) —
 > вынесены в шпаргалку **`docs/drone_commands.md`**.
 
-Окружение терминалов — как в Фазе 2 (`docs/phase2_setup.md`, раздел «Подготовка»: три
-`source`). Sim поднимается так же: Терминал 1 — `scripts/run_px4_sitl.sh` (теперь с нашим
-миром), Терминал 2 — `ros2 launch drone_simulator sim.launch.py` (агент + камера-мост),
-плюс пайплайн Фазы 3 через `ros2 launch drone_bringup tracking_demo.launch.py`.
+### Подготовка терминала (обязательно для любых `ros2 …` команд)
+
+Каждый **новый** терминал стартует с «голым» окружением — слои ROS2 не наследуются.
+**Терминал 1** (`scripts/run_px4_sitl.sh`) подготовки НЕ требует (скрипт сам зовёт `make`).
+Любой терминал, где запускаешь `ros2 launch` / `ros2 topic` / `ros2 run`, сперва подготовь
+**из корня проекта**:
+```bash
+source /opt/ros/humble/setup.bash    # ros2 (иначе: ros2: command not found)
+source install/setup.bash            # наши пакеты + px4_msgs (иначе: Package '…' not found / типы /fmu не разобрать)
+source .venv/bin/activate            # python-зависимости (нужно detector_node: torch/ultralytics)
+```
+Маркер готовности: `echo $ROS_DISTRO` → `humble`; `ros2 pkg prefix drone_control` → путь в
+`…/install/…`. Частая ошибка — забыть `source install/setup.bash` (даёт `Package … not found`
+или пустой `/fmu/*`). Детали — `docs/phase2_setup.md`, раздел «Подготовка».
+
+Sim поднимается так же: Терминал 1 — `scripts/run_px4_sitl.sh` (теперь с нашим миром),
+Терминал 2 — `ros2 launch drone_simulator sim.launch.py` (агент + камера-мост), плюс пайплайн
+Фазы 3 через `ros2 launch drone_bringup tracking_demo.launch.py`.
 
 | Видишь | Значит работает |
 |---|---|
@@ -253,10 +280,12 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
 
 **Как запускать (Терминал 1 заменяется на standalone-вариант):**
 ```bash
-# Терминал 1 — Gazebo (наш мир) + PX4, одной командой:
+# Терминал 1 — Gazebo (наш мир) + PX4, одной командой (подготовка НЕ нужна):
 WORLD=src/drone_simulator/worlds/follow_target.sdf scripts/run_px4_sitl.sh
 #   варианты: HEADLESS=1 … (без GUI), GPU=nvidia … (гибридная графика, см. Фаза 2)
-# Терминал 2 — агент + камера-мост (как в Фазе 2):
+# Терминалы 2–3 (ROS2) — СПЕРВА подготовь окружение из корня проекта (см. §10):
+#   source /opt/ros/humble/setup.bash && source install/setup.bash && source .venv/bin/activate
+# Терминал 2 — агент + камера-мост:
 ros2 launch drone_simulator sim.launch.py
 # Терминал 3 — что видит дрон:
 ros2 run rqt_image_view rqt_image_view /camera/image
@@ -303,7 +332,9 @@ follow_target.sdf` поднимает мир (`/world/default/clock`), Fuel-мо
 **Как проверять (поверх работающего sim из §11):**
 ```bash
 # Терминалы 1–2 — sim как в §11 (WORLD=… run_px4_sitl.sh  +  ros2 launch drone_simulator sim.launch.py)
-# Терминал 3 — детектор (из корня проекта, три source):
+# Терминалы 3–4 (ROS2) — СПЕРВА подготовь окружение из корня проекта (см. §10):
+#   source /opt/ros/humble/setup.bash && source install/setup.bash && source .venv/bin/activate
+# Терминал 3 — детектор:
 ros2 launch drone_bringup detector_demo.launch.py
 # Терминал 4 — проверка:
 ros2 topic echo /perception/target            # detected: true, offset_x/area_ratio — живые
@@ -354,6 +385,8 @@ offboard+arm. Имена топиков сверены с PX4 `dds_topics.yaml`:
 **Как проверять (поверх sim + агента, БЕЗ детектора):**
 ```bash
 # Терминал 1 — sim:   WORLD=src/drone_simulator/worlds/follow_target.sdf scripts/run_px4_sitl.sh
+# Терминалы 2–4 (ROS2) — СПЕРВА подготовь окружение из корня проекта (см. §10):
+#   source /opt/ros/humble/setup.bash && source install/setup.bash && source .venv/bin/activate
 # Терминал 2 — агент: ros2 launch drone_simulator sim.launch.py
 # Терминал 3 — контроллер:
 ros2 launch drone_bringup follower_demo.launch.py
