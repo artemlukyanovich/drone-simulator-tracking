@@ -3,11 +3,16 @@
 <package format="3">
   <name>drone_perception</name>
   <version>0.0.0</version>
-  <description>Перцепция дрона: detector_node (YOLO над /camera/image). Фаза 1 — заглушка.</description>
+  <description>Перцепция дрона: detector_node (YOLO над /camera/image → /perception/target).</description>
   <maintainer email="artemlukyanovich@gmail.com">artem</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>drone_interfaces</depend>
+  <!-- ultralytics/torch/opencv-python — pip-зависимости в .venv (requirements.txt),
+       не ament-пакеты, поэтому здесь не объявляются (см. requirements.txt). -->
 
   <export>
     <build_type>ament_python</build_type>

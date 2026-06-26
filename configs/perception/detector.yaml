@@ -1,0 +1,21 @@
+# Параметры detector_node (Фаза 3). ros2-params формат: грузится launch-файлом
+# (drone_bringup/launch/detector_demo.launch.py). Источник истины по настройкам
+# перцепции — этот файл (§7 CLAUDE.md: конфиги отдельно от кода).
+detector_node:
+  ros__parameters:
+    # Топики.
+    image_topic: /camera/image          # вход: камера дрона (sensor_msgs/Image, rgb8)
+    target_topic: /perception/target     # выход: цель (drone_interfaces/Target)
+    annotated_topic: /perception/image    # выход: кадр с bbox (для глаз)
+    publish_annotated: true               # рисовать и публиковать /perception/image
+
+    # Модель YOLO. Путь относителен корня проекта (откуда запускаем команды),
+    # либо укажи абсолютный путь. Если файла нет — ultralytics скачает по имени.
+    # Веса в git не коммитятся (*.pt в .gitignore); локальная копия — models/yolov8n.pt.
+    model_path: models/yolov8n.pt
+    confidence_threshold: 0.5             # порог уверенности детекции
+    device: cuda                          # cuda | cpu (при отсутствии GPU — авто-откат на cpu)
+
+    # Цель слежения.
+    target_classes: ['person']            # COCO-классы цели; [] = любой класс
+    selection: largest                    # выбор одной цели: largest (крупнейший bbox) | closest (ближе к центру)

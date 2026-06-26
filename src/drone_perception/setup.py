@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'drone_perception'
@@ -9,6 +12,9 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # Копия конфига перцепции в share (источник истины — configs/perception/).
+        (os.path.join('share', package_name, 'config'),
+         glob('../../configs/perception/detector.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

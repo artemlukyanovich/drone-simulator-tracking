@@ -252,6 +252,10 @@ drone-simulator-tracking/          ← это WORKSPACE, а не обычный 
 - **Система координат** bbox→setpoint (body vs NED) — фиксировать явно.
 - **DDS-мост** (uXRCE-DDS agent) должен быть запущен, иначе PX4-топики не появятся в ROS2.
 - **Двойная вложенность** `src/<пакет>/<пакет>/` — требование ament_python, не ошибка.
+- **venv-shebang при сборке** (Фаза 3): ноды с pip-зависимостями (`torch`/`ultralytics`)
+  ломаются `ModuleNotFoundError`, если собрать голым `colcon build` (системный python в
+  shebang entry-point'а). Собирать только **`scripts/build.sh`** (colcon под venv-python) —
+  тогда shebang узла = `.venv/bin/python`. Детали — `docs/phase3_setup.md` §12.
 
 ## 10. Глоссарий
 

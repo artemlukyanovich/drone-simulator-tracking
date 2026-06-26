@@ -8,10 +8,11 @@
 > Источник истины по архитектуре — `docs/project_plan.md` (§5, §8.9–8.10). Здесь — детали
 > именно Фазы 3. Версии стека и sim-сторона — Фаза 2 (`docs/phase2_setup.md`), они не меняются.
 >
-> Статус: 🚧 **в реализации** (2026-06-26). Инкремент 0 ✅ — пакет `drone_interfaces` +
-> `Target.msg`. Инкремент 1 🚧 — свой мир `follow_target.sdf` с человеком + standalone-запуск
-> (`WORLD=…`); мир и Fuel-модель грузятся (smoke-тест), осталось подтвердить камеру на дисплее
-> (см. §11). Ноды `detector_node`/`follower_node` пока heartbeat-заглушки (Фаза 1).
+> Статус: 🚧 **в реализации** (2026-06-26). Инкременты 0 ✅ (`drone_interfaces`+`Target.msg`),
+> 1 ✅ (свой мир `follow_target.sdf` + standalone-запуск, камера с человеком подтверждена,
+> §11). Инкремент 2 🚧 — `detector_node` (YOLO → `/perception/target` + `/perception/image`):
+> собран, YOLO детектит модель оффлайн, осталось подтвердить live на sim (§12). `follower_node`
+> пока heartbeat-заглушка (Фаза 1).
 
 ---
 
@@ -176,8 +177,8 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
 | # | Что делаем | Go/no-go |
 |---|---|---|
 | **0** ✅ | Пакет `drone_interfaces` (`ament_cmake`) + `Target.msg`. `colcon build`. | `ros2 interface show drone_interfaces/msg/Target` печатает поля |
-| **1** 🚧 | Свой world-SDF с человеком (сначала **статично**), standalone-запуск (см. §11). | мир и человек грузятся ✅; **человек в `/camera/image`** — подтвердить на дисплее |
-| **2** | `detector_node`: порт `ObjectDetector`, RGB→BGR, YOLO, выбор одной цели, публикация `/perception/target` (+ `/perception/image`). | `ros2 topic echo /perception/target` → `detected=true`, `offset_x` меняется при сдвиге дрона; bbox виден в `rqt_image_view` |
+| **1** ✅ | Свой world-SDF с человеком (сначала **статично**), standalone-запуск (см. §11). | мир, человек, дрон в Gazebo; человек виден в `/camera/image` ✅ (2026-06-26) |
+| **2** 🚧 | `detector_node`: порт `ObjectDetector`, RGB→BGR, YOLO, выбор одной цели, публикация `/perception/target` (+ `/perception/image`). | YOLO детектит модель оффлайн ✅; live `/perception/target` + bbox в `rqt_image_view` — подтвердить на sim |
 | **3** | `follower_node`: offboard-цикл (стрим→offboard→arm), P-регулятор, конфиг `configs/control/`. Тест с **фейковым** target через `ros2 topic pub`. | дрон армится, входит в offboard, реагирует на фейковый offset; offboard не срывается |
 | **4** | Полный пайплайн в `tracking_demo.launch.py` (детектор+контроллер+конфиги). Сперва статичная цель, затем **включить ходьбу** actor'а. | дрон взлетает, доворачивается к человеку, держит дистанцию; при движении цели — следует |
 
@@ -186,9 +187,10 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
 
 ## 9. Ключевые ловушки и открытые детали Фазы 3
 
-- **Детект меша actor'а.** Текстуры Gazebo-actor'а простые — `yolov8n` может не распознать
-  его как `person`. Поэтому инкр. 1 проверяет детект **на статичной** цели до включения
-  движения. Fallback: более реалистичная модель человека или другой COCO-объект.
+- **Детект меша человека** — ✅ де-рискнуто (2026-06-26): `yolov8n` детектит Fuel-модель
+  `Standing person` как `person` с conf **0.81–0.92** на 4/5 ракурсов превью (промах лишь на
+  нетипичном ракурсе). Камера смотрит вперёд на уровне роста — «хорошие» ракурсы. Для
+  ходячего actor'а позже стоит перепроверить (другой меш/анимация).
 - **Как прокинуть свой мир в PX4** — ✅ решено (standalone, §11): сами поднимаем Gazebo с
   нашим SDF, PX4 цепляется (`PX4_GZ_STANDALONE`). `<world>` обязан называться `default`
   (в standalone PX4 не определяет имя работающего мира, `PX4_GZ_WORLD` остаётся `default`).
@@ -265,7 +267,59 @@ follow_target.sdf` поднимает мир (`/world/default/clock`), Fuel-мо
 `target_person` присутствует (`gz model --list`), ошибок загрузки нет. `colcon build
 --packages-select drone_simulator` — зелёный, мир ставится в share.
 
-**Осталось подтвердить на дисплее (go/no-go инкр. 1):** полный standalone-запуск (PX4
-цепляется к нашему Gazebo, дрон спавнится) и **человек реально виден в `/camera/image`**
-(`rqt_image_view`). Это первый раз, когда проверяется связка standalone-attach + камера —
-вынесено на ручной прогон с GUI.
+**Go/no-go инкр. 1 — ✅ пройден (2026-06-26, ручной прогон с GUI):** полный standalone-запуск
+сработал — окно Gazebo показывает мир, человека и дрон (вид от третьего лица); PX4 подцепился
+к нашему Gazebo, дрон заспавнился; в `rqt_image_view /camera/image` человек корректно виден
+прямо перед дроном. Связка standalone-attach + камера подтверждена.
+
+## 12. Реализация инкремента 2 — детектор (факты)
+
+**Что построено:**
+- `src/drone_perception/drone_perception/detector.py` — `ObjectDetector` (слим-порт логики
+  из project_1 `src/detector.py`): YOLO над одним кадром, путь `.pt` (CPU/CUDA), без
+  трекинга/ReID/onnx/engine. Вход `detect()` — кадр OpenCV BGR.
+- `src/drone_perception/drone_perception/detector_node.py` — нода (заменила заглушку Фазы 1):
+  `/camera/image` → `cv_bridge` (rgb8→**bgr8**) → `ObjectDetector` → фильтр по `target_classes`
+  → выбор одной цели (`largest`/`closest`) → нормализованные `offset_x/offset_y/area_ratio`
+  → `/perception/target` (`drone_interfaces/Target`, `header` = стамп кадра). Если
+  `publish_annotated` — рисует bbox/крест/линию и публикует `/perception/image` (bgr8).
+  Подписка на камеру — `qos_profile_sensor_data` (best-effort, под sensor-данные).
+- `configs/perception/detector.yaml` — ros2-params (топики, `model_path`, `confidence`,
+  `device`, `target_classes`, `selection`). `setup.py` ставит копию в share.
+- `src/drone_bringup/launch/detector_demo.launch.py` — запуск только детектора с конфигом
+  (для изолированной проверки поверх работающего sim).
+- `package.xml` детектора: добавлены `sensor_msgs`, `cv_bridge`, `drone_interfaces`.
+- Веса: `models/yolov8n.pt` (копия из project_1, gitignored через `*.pt`).
+
+**Проверено мной (2026-06-26, без sim):**
+- `colcon build` (interfaces+perception+bringup) зелёный; импорт `Target` и `DetectorNode` ок;
+  YOLO грузится с `models/yolov8n.pt` на CUDA, инференс не падает.
+- **Де-риск детекта:** прогон `yolov8n` по превью Fuel-модели `Standing person` →
+  `person` с conf 0.81–0.92 на 4/5 ракурсов (см. §9).
+
+**Как проверять (поверх работающего sim из §11):**
+```bash
+# Терминалы 1–2 — sim как в §11 (WORLD=… run_px4_sitl.sh  +  ros2 launch drone_simulator sim.launch.py)
+# Терминал 3 — детектор (из корня проекта, три source):
+ros2 launch drone_bringup detector_demo.launch.py
+# Терминал 4 — проверка:
+ros2 topic echo /perception/target            # detected: true, offset_x/area_ratio — живые
+ros2 run rqt_image_view rqt_image_view /perception/image   # человек в красной рамке + зелёный крест центра
+```
+
+**Go/no-go инкр. 2 (на дисплее):** `/perception/target` отдаёт `detected=true` с осмысленным
+`offset_x` (≈0, человек по центру; при сдвиге дрона/цели — меняется), и в `/perception/image`
+виден bbox вокруг человека.
+
+**⚠ Ловушка сборки (важно, решена): venv-shebang.** Первый запуск дал
+`ModuleNotFoundError: No module named 'torch'`, хотя `(.venv)` активен. Причина: ноду
+запускает сгенерированный entry-point, и интерпретатор задаёт его **shebang**, а не
+активация venv в шелле. `ament_python` штампует в shebang тот python, под которым шёл
+`colcon build`. Системный `colcon` — скрипт с shebang `/usr/bin/python3`, поэтому обычный
+`colcon build` даёт ноды на системном python, который не видит `torch` (он только в `.venv`).
+Решение — собирать colcon **под venv-python**; для этого заведён **`scripts/build.sh`**
+(`.venv/bin/python $(command -v colcon) build "$@"`). Тогда shebang узла = `.venv/bin/python`,
+который видит и `torch` (свой site-packages), и `rclpy` (через PYTHONPATH от `/opt/ros`, venv
+создан с `--system-site-packages`). **Отныне собираем проект только `scripts/build.sh`**, иначе
+ноды с pip-зависимостями снова сломаются. Проверено: `head -1` entry-point'а →
+`#!.../.venv/bin/python`, нода грузит YOLO и доходит до «готов».
