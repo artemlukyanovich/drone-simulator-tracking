@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>drone_interfaces</name>
+  <version>0.0.0</version>
+  <description>Кастомные ROS2-интерфейсы проекта. Target.msg — цель слежения (нормализованный
+    offset от центра кадра + размер bbox) для связки detector_node → follower_node (Фаза 3).</description>
+  <maintainer email="artemlukyanovich@gmail.com">artem</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- ament_cmake + rosidl: генерация типов сообщений (ament_python так не умеет). -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <!-- Target.msg использует std_msgs/Header (а он — builtin_interfaces/Time). -->
+  <depend>std_msgs</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

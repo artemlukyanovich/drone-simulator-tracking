@@ -8,8 +8,10 @@
 > Источник истины по архитектуре — `docs/project_plan.md` (§5, §8.9–8.10). Здесь — детали
 > именно Фазы 3. Версии стека и sim-сторона — Фаза 2 (`docs/phase2_setup.md`), они не меняются.
 >
-> Статус на момент написания: 🚧 **спланировано, код ещё не написан.** Ноды
-> `detector_node`/`follower_node` пока heartbeat-заглушки (Фаза 1).
+> Статус: 🚧 **в реализации** (2026-06-26). Инкремент 0 ✅ — пакет `drone_interfaces` +
+> `Target.msg`. Инкремент 1 🚧 — свой мир `follow_target.sdf` с человеком + standalone-запуск
+> (`WORLD=…`); мир и Fuel-модель грузятся (smoke-тест), осталось подтвердить камеру на дисплее
+> (см. §11). Ноды `detector_node`/`follower_node` пока heartbeat-заглушки (Фаза 1).
 
 ---
 
@@ -173,8 +175,8 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
 
 | # | Что делаем | Go/no-go |
 |---|---|---|
-| **0** | Пакет `drone_interfaces` (`ament_cmake`) + `Target.msg`. `colcon build`. | `ros2 interface show drone_interfaces/msg/Target` печатает поля |
-| **1** | Свой world-SDF с человеком (сначала **статично**), прокинуть мир в `run_px4_sitl.sh` (см. §9). | в GUI Gazebo и в `/camera/image` (`rqt_image_view`) виден человек |
+| **0** ✅ | Пакет `drone_interfaces` (`ament_cmake`) + `Target.msg`. `colcon build`. | `ros2 interface show drone_interfaces/msg/Target` печатает поля |
+| **1** 🚧 | Свой world-SDF с человеком (сначала **статично**), standalone-запуск (см. §11). | мир и человек грузятся ✅; **человек в `/camera/image`** — подтвердить на дисплее |
 | **2** | `detector_node`: порт `ObjectDetector`, RGB→BGR, YOLO, выбор одной цели, публикация `/perception/target` (+ `/perception/image`). | `ros2 topic echo /perception/target` → `detected=true`, `offset_x` меняется при сдвиге дрона; bbox виден в `rqt_image_view` |
 | **3** | `follower_node`: offboard-цикл (стрим→offboard→arm), P-регулятор, конфиг `configs/control/`. Тест с **фейковым** target через `ros2 topic pub`. | дрон армится, входит в offboard, реагирует на фейковый offset; offboard не срывается |
 | **4** | Полный пайплайн в `tracking_demo.launch.py` (детектор+контроллер+конфиги). Сперва статичная цель, затем **включить ходьбу** actor'а. | дрон взлетает, доворачивается к человеку, держит дистанцию; при движении цели — следует |
@@ -187,14 +189,13 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
 - **Детект меша actor'а.** Текстуры Gazebo-actor'а простые — `yolov8n` может не распознать
   его как `person`. Поэтому инкр. 1 проверяет детект **на статичной** цели до включения
   движения. Fallback: более реалистичная модель человека или другой COCO-объект.
-- **Как прокинуть свой мир в PX4.** PX4 SITL сам поднимает Gazebo и выбирает мир (env
-  `PX4_GZ_WORLD`, дефолт `default`; миры — в `PX4-Autopilot/Tools/simulation/gz/worlds/`).
-  Нужно решить и **проверить при реализации**: положить наш world-SDF туда vs указать через
-  переменную/ресурс-путь, и как это аккуратно вписать в `scripts/run_px4_sitl.sh` (наш
-  world-SDF держим в репо, напр. `src/drone_simulator/worlds/`, PX4 — внешний, не коммитим).
+- **Как прокинуть свой мир в PX4** — ✅ решено (standalone, §11): сами поднимаем Gazebo с
+  нашим SDF, PX4 цепляется (`PX4_GZ_STANDALONE`). `<world>` обязан называться `default`
+  (в standalone PX4 не определяет имя работающего мира, `PX4_GZ_WORLD` остаётся `default`).
 - **RGB/BGR** при `cv_bridge` (§6) — забыть конверсию = деградация YOLO.
-- **Ориентация камеры** `x500_mono_cam` (вперёд vs вниз) — sample-кадр Фазы 2 показал
-  горизонт (похоже, вперёд-смотрящая, что годится). Подтвердить перед расстановкой цели.
+- **Ориентация камеры** `x500_mono_cam` — ✅ подтверждено: монтаж `.12 .03 .242 0 0 0`,
+  углы нулевые → камера смотрит **вперёд (+X body) горизонтально**, FOV≈100°. Цель ставим
+  впереди по +X.
 - **Offboard >2 Гц и порядок arm/offboard** (§5) — главные грабли управления PX4.
 - **Кастомные msg → `ament_cmake`** (§3), не `ament_python` — это не ошибка структуры.
 
@@ -218,3 +219,53 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
 - **`rqt_plot` по `/perception/target` `offset_x`** — видно, как P-регулятор сводит ошибку
   наведения к нулю во времени.
 - Запись демо-видео и телеметрии в `outputs/` — формально Фаза 4, но удобно подключить сразу.
+
+## 11. Реализация инкремента 1 — свой мир с целью (факты)
+
+**Что построено:**
+- `src/drone_simulator/worlds/follow_target.sdf` — наш мир (в git проекта). Копия штатного
+  PX4 `default.sdf` (все системные плагины + физика + земля + солнце +
+  `spherical_coordinates`) **плюс** включённая Fuel-модель человека
+  `OpenRobotics/Standing person` (CC0) на позе `6 0 0 0 0 3.14159` (6 м впереди дрона по
+  +X, лицом к нему), `static`. Меш скачивается с Fuel и кэшируется в `~/.gz/fuel` — в репо
+  не коммитится, только URI в SDF.
+- `scripts/run_px4_sitl.sh` — добавлен **standalone-режим** через `WORLD=<путь.sdf>`: скрипт
+  сам поднимает `gz sim -r -s <world>` (+ GUI, если не `HEADLESS=1`), ждёт `clock`-топик,
+  затем запускает `PX4_GZ_STANDALONE=1 make px4_sitl gz_x500_mono_cam` (PX4 цепляется к
+  работающему Gazebo). `GZ_SIM_RESOURCE_PATH` дополняется моделями PX4 — чтобы сервер
+  разрешил спавн `x500_mono_cam`. На выходе скрипт гасит поднятый им Gazebo (trap).
+- `src/drone_simulator/setup.py` — ставит `worlds/*.sdf` в `share/drone_simulator/worlds/`.
+
+**Почему standalone и почему `<world name="default">`** (важно):
+- PX4 не отдаёт мир под подмену через env — при старте сорсит `gz_env.sh`, который перетирает
+  `PX4_GZ_WORLDS` на свою папку. Поэтому штатный путь для своего мира — поднять Gazebo самим,
+  а PX4 пустить с `PX4_GZ_STANDALONE=1`.
+- В standalone PX4 **пропускает** блок определения имени работающего мира
+  (`ROMFS/.../px4-rc.simulator`), и `PX4_GZ_WORLD` остаётся `default` (его жёстко задаёт
+  make-цель `gz_x500_mono_cam`). `gz_bridge` цепляется к топикам `/world/default/*`. Значит
+  имя `<world>` обязано быть `default`, иначе мост не найдёт сенсорику. Имя **файла** при
+  этом описательное (`follow_target.sdf`).
+
+**Как запускать (Терминал 1 заменяется на standalone-вариант):**
+```bash
+# Терминал 1 — Gazebo (наш мир) + PX4, одной командой:
+WORLD=src/drone_simulator/worlds/follow_target.sdf scripts/run_px4_sitl.sh
+#   варианты: HEADLESS=1 … (без GUI), GPU=nvidia … (гибридная графика, см. Фаза 2)
+# Терминал 2 — агент + камера-мост (как в Фазе 2):
+ros2 launch drone_simulator sim.launch.py
+# Терминал 3 — что видит дрон:
+ros2 run rqt_image_view rqt_image_view /camera/image
+```
+Остановка — `pxh> shutdown`, затем `scripts/stop_sim.sh` (в standalone PX4 **не владеет**
+Gazebo, поэтому `stop_sim.sh` обязателен, чтобы погасить gz-сервер).
+
+**Проверено (2026-06-26, headless smoke-тест только мира, без PX4):** `gz sim -s
+follow_target.sdf` поднимает мир (`/world/default/clock`), Fuel-модель `Standing person`
+скачивается и кэшируется (`~/.gz/fuel/.../standing person/3/meshes/standing.dae`), сущность
+`target_person` присутствует (`gz model --list`), ошибок загрузки нет. `colcon build
+--packages-select drone_simulator` — зелёный, мир ставится в share.
+
+**Осталось подтвердить на дисплее (go/no-go инкр. 1):** полный standalone-запуск (PX4
+цепляется к нашему Gazebo, дрон спавнится) и **человек реально виден в `/camera/image`**
+(`rqt_image_view`). Это первый раз, когда проверяется связка standalone-attach + камера —
+вынесено на ручной прогон с GUI.

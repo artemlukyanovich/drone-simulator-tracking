@@ -18,6 +18,10 @@ setup(
         # пересборки, либо передать bridge_config:=<путь> напрямую (см. sim.launch.py).
         (os.path.join('share', package_name, 'config'),
          glob('../../configs/simulator/camera_bridge.yaml')),
+        # Миры Gazebo (Фаза 3). Standalone-запуск можно вести и от исходника
+        # (WORLD=src/.../worlds/follow_target.sdf), но ставим копию в share для
+        # стабильного пути и единообразия с конфигом.
+        (os.path.join('share', package_name, 'worlds'), glob('worlds/*.sdf')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
