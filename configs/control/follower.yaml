@@ -1,0 +1,33 @@
+# Параметры follower_node (Фаза 3). ros2-params формат, грузится launch-файлом
+# (drone_bringup/launch/follower_demo.launch.py). Источник истины по управлению —
+# этот файл (§7 CLAUDE.md: конфиги отдельно от кода, без магических чисел).
+follower_node:
+  ros__parameters:
+    loop_rate_hz: 20.0                # частота offboard-цикла (>2 Гц обязательно, иначе срыв)
+    target_topic: /perception/target  # вход: цель от детектора (drone_interfaces/Target)
+
+    # Высота и взлёт.
+    target_altitude_m: 2.5            # целевая высота полёта (P-регулятор сам выполнит взлёт)
+    min_follow_altitude_m: 1.0        # ниже этой высоты горизонтальное слежение выключено
+    arm_after_s: 2.0                  # сколько стримить setpoint'ы до offboard+arm (порядок §5)
+    target_timeout_s: 0.5             # старше — цель считается потерянной (hover)
+
+    # P-коэффициенты.
+    kp_yaw: 1.2                       # offset_x → yaw-rate
+    kp_forward: 3.0                   # (area_target - area_ratio) → скорость вперёд/назад
+    kp_altitude: 1.0                  # ошибка высоты → вертикальная скорость
+    area_target: 0.15                 # желаемая доля кадра под bbox (дистанция до цели)
+
+    # Лимиты скоростей (безопасность + плавность).
+    max_yaw_rate: 0.6                 # рад/с
+    max_forward_speed: 1.5            # м/с
+    max_vertical_speed: 1.0           # м/с
+
+    # Мёртвые зоны — не реагировать на мелкие ошибки (дрожание bbox).
+    yaw_deadband: 0.05                # |offset_x| ниже — не доворачиваем
+    area_deadband: 0.02               # |area_err| ниже — не едем
+
+    # Знаки осей (frame-неоднозначность). Если в симуляторе доворот/ход идёт В ПРОТИВО-
+    # ПОЛОЖНУЮ сторону — поменять соответствующий знак на -1.0 (без правки кода, §Ф3-5).
+    yaw_sign: 1.0
+    forward_sign: 1.0

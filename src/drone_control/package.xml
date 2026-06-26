@@ -3,11 +3,13 @@
 <package format="3">
   <name>drone_control</name>
   <version>0.0.0</version>
-  <description>Управление дроном: follower_node (offboard-цикл, P/PID). Фаза 1 — заглушка.</description>
+  <description>Управление дроном: follower_node (offboard-цикл, P-регулятор слежения).</description>
   <maintainer email="artemlukyanovich@gmail.com">artem</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <depend>px4_msgs</depend>
+  <depend>drone_interfaces</depend>
 
   <export>
     <build_type>ament_python</build_type>

@@ -9,10 +9,10 @@
 > именно Фазы 3. Версии стека и sim-сторона — Фаза 2 (`docs/phase2_setup.md`), они не меняются.
 >
 > Статус: 🚧 **в реализации** (2026-06-26). Инкременты 0 ✅ (`drone_interfaces`+`Target.msg`),
-> 1 ✅ (свой мир `follow_target.sdf` + standalone-запуск, камера с человеком подтверждена,
-> §11). Инкремент 2 🚧 — `detector_node` (YOLO → `/perception/target` + `/perception/image`):
-> собран, YOLO детектит модель оффлайн, осталось подтвердить live на sim (§12). `follower_node`
-> пока heartbeat-заглушка (Фаза 1).
+> 1 ✅ (свой мир + standalone, §11), 2 ✅ (`detector_node`: YOLO → `/perception/target`, §12),
+> 3 ✅ (`follower_node`: offboard-цикл + P-регулятор, взлёт и реакция на фейк подтверждены, §13).
+> Осталось — инкремент 4: полный пайплайн «детектор+контроллер» в `tracking_demo.launch.py`,
+> дрон наводится на реального человека (начнём в новой сессии).
 
 ---
 
@@ -178,8 +178,8 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
 |---|---|---|
 | **0** ✅ | Пакет `drone_interfaces` (`ament_cmake`) + `Target.msg`. `colcon build`. | `ros2 interface show drone_interfaces/msg/Target` печатает поля |
 | **1** ✅ | Свой world-SDF с человеком (сначала **статично**), standalone-запуск (см. §11). | мир, человек, дрон в Gazebo; человек виден в `/camera/image` ✅ (2026-06-26) |
-| **2** 🚧 | `detector_node`: порт `ObjectDetector`, RGB→BGR, YOLO, выбор одной цели, публикация `/perception/target` (+ `/perception/image`). | YOLO детектит модель оффлайн ✅; live `/perception/target` + bbox в `rqt_image_view` — подтвердить на sim |
-| **3** | `follower_node`: offboard-цикл (стрим→offboard→arm), P-регулятор, конфиг `configs/control/`. Тест с **фейковым** target через `ros2 topic pub`. | дрон армится, входит в offboard, реагирует на фейковый offset; offboard не срывается |
+| **2** ✅ | `detector_node`: порт `ObjectDetector`, RGB→BGR, YOLO, выбор одной цели, публикация `/perception/target` (+ `/perception/image`). | человек детектится как `person`, bbox рисуется, `offset` реагирует на движение дрона ✅ (2026-06-26) |
+| **3** ✅ | `follower_node`: offboard-цикл (стрим→offboard→arm с ретраем), P-регулятор, конфиг `configs/control/`. Тест с **фейковым** target. | дрон армится, offboard, взлёт, корректная реакция на фейк ✅ (2026-06-26) |
 | **4** | Полный пайплайн в `tracking_demo.launch.py` (детектор+контроллер+конфиги). Сперва статичная цель, затем **включить ходьбу** actor'а. | дрон взлетает, доворачивается к человеку, держит дистанцию; при движении цели — следует |
 
 Порядок неслучаен: без объекта в мире (инкр. 1) детектор тестировать не на чем; контроллер
@@ -202,6 +202,9 @@ offset_y = (cy - H/2) / (H/2)     # -1 = верх кадра,        0 = по ц
 - **Кастомные msg → `ament_cmake`** (§3), не `ament_python` — это не ошибка структуры.
 
 ## 10. Проверка и визуализация (как «пощупать» результат)
+
+> 📋 Базовые команды проверки управления (pxh + ROS2, расшифровка кодов, типовые сценарии) —
+> вынесены в шпаргалку **`docs/drone_commands.md`**.
 
 Окружение терминалов — как в Фазе 2 (`docs/phase2_setup.md`, раздел «Подготовка»: три
 `source`). Sim поднимается так же: Терминал 1 — `scripts/run_px4_sitl.sh` (теперь с нашим
@@ -307,9 +310,9 @@ ros2 topic echo /perception/target            # detected: true, offset_x/area_ra
 ros2 run rqt_image_view rqt_image_view /perception/image   # человек в красной рамке + зелёный крест центра
 ```
 
-**Go/no-go инкр. 2 (на дисплее):** `/perception/target` отдаёт `detected=true` с осмысленным
-`offset_x` (≈0, человек по центру; при сдвиге дрона/цели — меняется), и в `/perception/image`
-виден bbox вокруг человека.
+**Go/no-go инкр. 2 — ✅ пройден (2026-06-26):** человек детектится как `person`, bbox рисуется
+в `/perception/image`, `offset_x` корректно реагирует на перемещение дрона (взлёт). Уверенность
+bbox непостоянна — ожидаемо.
 
 **⚠ Ловушка сборки (важно, решена): venv-shebang.** Первый запуск дал
 `ModuleNotFoundError: No module named 'torch'`, хотя `(.venv)` активен. Причина: ноду
@@ -323,3 +326,56 @@ ros2 run rqt_image_view rqt_image_view /perception/image   # человек в �
 создан с `--system-site-packages`). **Отныне собираем проект только `scripts/build.sh`**, иначе
 ноды с pip-зависимостями снова сломаются. Проверено: `head -1` entry-point'а →
 `#!.../.venv/bin/python`, нода грузит YOLO и доходит до «готов».
+
+## 13. Реализация инкремента 3 — контроллер (факты)
+
+**Что построено:**
+- `src/drone_control/drone_control/follower_node.py` — offboard-контроллер (заменил заглушку
+  Фазы 1). Таймер `loop_rate_hz` (20 Гц >2 Гц) каждый тик публикует `OffboardControlMode`
+  (`velocity=True`) + `TrajectorySetpoint` — даже без цели (hover), иначе PX4 срывает offboard.
+  Через `arm_after_s` однократно шлёт `VehicleCommand` DO_SET_MODE(offboard) + ARM (порядок §5).
+- **P-регулятор (body-frame velocity):** высота — P по `target_altitude_m` (он же делает
+  взлёт; NED z<0=вверх); `offset_x → yawspeed` (доворот, мёртвая зона); `area_ratio` vs
+  `area_target → v_fwd` (вперёд/назад). body «вперёд» → NED по текущему `heading`
+  (`TrajectorySetpoint.velocity` — в NED). Горизонталь включается только выше
+  `min_follow_altitude_m`; при потере/устаревании цели (`target_timeout_s`) — hover.
+  Знаки осей — параметры `yaw_sign`/`forward_sign` (frame-неоднозначность, §Ф3-5).
+- `configs/control/follower.yaml` — все P-коэффициенты, лимиты, мёртвые зоны, знаки.
+- `src/drone_bringup/launch/follower_demo.launch.py` — запуск только контроллера с конфигом.
+- `package.xml` (+`px4_msgs`,`drone_interfaces`), `setup.py` (конфиг в share). QoS PX4 —
+  best-effort + transient_local (как в офиц. примере px4_ros_com).
+
+**Проверено мной (без PX4):** `scripts/build.sh` зелёный, shebang venv'овый; импорты
+(`px4_msgs`, `FollowerNode`) ок; нода доходит до «готов» и через `arm_after_s` шлёт
+offboard+arm. Имена топиков сверены с PX4 `dds_topics.yaml`: `/fmu/in/offboard_control_mode`,
+`/fmu/in/trajectory_setpoint`, `/fmu/in/vehicle_command`, `/fmu/out/vehicle_local_position` —
+совпадают.
+
+**Как проверять (поверх sim + агента, БЕЗ детектора):**
+```bash
+# Терминал 1 — sim:   WORLD=src/drone_simulator/worlds/follow_target.sdf scripts/run_px4_sitl.sh
+# Терминал 2 — агент: ros2 launch drone_simulator sim.launch.py
+# Терминал 3 — контроллер:
+ros2 launch drone_bringup follower_demo.launch.py
+# Терминал 4 — ФЕЙКОВАЯ цель (правее центра, мелкий bbox → дрон должен довернуть вправо и вперёд):
+ros2 topic pub -r 10 /perception/target drone_interfaces/msg/Target \
+  '{detected: true, offset_x: 0.4, offset_y: 0.0, area_ratio: 0.05}'
+```
+**Правильная остановка** (контроллер каждую секунду заново держит OFFBOARD, поэтому
+`commander land` при живом follower'е тут же перебивается — сперва гасим контроллер):
+1. Ctrl-C в Терм.4 (фейк) → hover.
+2. Ctrl-C в Терм.3 (follower) → setpoint'ы прекращаются, offboard больше не удерживается.
+3. Терм.1: `pxh> commander land` (по желанию `commander disarm`).
+4. `pxh> shutdown` → `scripts/stop_sim.sh`. В sim можно и без мягкой посадки: после шагов
+   1–2 сразу `shutdown` + `stop_sim.sh`.
+
+> ⚠️ Между прогонами ОБЯЗАТЕЛЬНО `scripts/stop_sim.sh` (standalone PX4 не владеет Gazebo —
+> иначе остаются живые gz/агент, и следующий старт даёт `Arming denied: Resolve system health
+> failures first` из-за конфликта двух симуляций). Проверка чистоты:
+> `pgrep -af "gz sim|bin/px4|MicroXRCEAgent|parameter_bridge"` → пусто.
+
+**Go/no-go инкр. 3 — ✅ пройден (2026-06-26, чистый старт):** дрон армится, входит в offboard,
+взлетает на ~2.5 м и корректно реагирует на фейк (`offset_x=0.4` → доворот **вправо**,
+`area_ratio=0.05` → ход **вперёд** = полёт по кругу); offboard не срывается; снятие фейка →
+hover. Знаки осей оказались верны (`yaw_sign=forward_sign=1.0`). Первая попытка на «грязном»
+старте дала `Arming denied` из-за висевших процессов прошлого прогона — лечится `stop_sim.sh`.
