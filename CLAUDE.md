@@ -21,7 +21,7 @@ the detailed rationale.
 `gz_x500_mono_cam` flies in Gazebo Harmonic, uXRCE-DDS bridge exposes `/fmu/*` at 100 Hz via
 `px4_msgs` `release/1.15`, camera → `/camera/image` ~30 Hz.)
 
-**Increments 0–3 done (✅)** — perception/control logic now exists:
+**Increments 0–4A done (✅)** — full pipeline flies against a static target:
 - `drone_interfaces/Target.msg` — custom interface (`detected`, normalized `offset_x/y`, `area_ratio`).
 - Own world `src/drone_simulator/worlds/follow_target.sdf` (Fuel "Standing person"), launched
   **standalone**: `WORLD=… scripts/run_px4_sitl.sh` (PX4 attaches via `PX4_GZ_STANDALONE`;
@@ -29,15 +29,18 @@ the detailed rationale.
 - `detector_node` — YOLO over `/camera/image` → `/perception/target` (+ `/perception/image`).
 - `follower_node` — offboard loop + P-controller, **validated with a fake target** (arms,
   takes off, reacts correctly).
+- `tracking_demo.launch.py` — real pipeline (`follower_node`+`detector_node`+configs, with
+  `detector_delay_s`/`detector_device` diag knobs). **Gate 4A passed (2026-07-05):** drone
+  arms, takes off, turns to the person, holds distance (`offset_x→0`, `area_ratio≈0.15`).
 
-**Increment 4 is next:** wire `detector_node` + `follower_node` together in
-`tracking_demo.launch.py` (currently reverted to the Phase-1 stub launch) so the drone tracks
-the real person in the world. Start it in a fresh session; see `docs/phase3_setup.md` §8 (row 4).
+**Increment 4B is next:** replace the static `Standing person` in `follow_target.sdf` with a
+walking Gazebo `<actor>` (trajectory) so the drone follows a *moving* target; re-check YOLO
+detects the actor mesh. See `docs/phase3_setup.md` §14 (step B).
 
-⚠️ **Open issue (increment 4):** running the *full* pipeline (camera bridge + detector +
-follower together) was observed to block arming (`commander check` → `Compass Sensor 0
-missing`, `sensor_mag never published`); the controller *without* the detector arms and flies
-fine after a clean `scripts/stop_sim.sh`. Cause not finalized — see `docs/phase3_setup.md` §9.
+⚠️ **Hybrid-graphics gotcha (was the "won't arm" blocker, now resolved):** run the sim with
+**`GPU=nvidia`** on this laptop. Without it, YOLO on the integrated GPU contends with Gazebo's
+render → lockstep stalls → PX4 loses sensors (`Compass Sensor 0 missing`) *and* the camera
+degrades → arming denied. `GPU=nvidia` fixes both. See `docs/phase3_setup.md` §9.
 
 ⚠️ **Build with `scripts/build.sh`, not bare `colcon build`** — nodes with pip deps
 (`torch`/`ultralytics`) need the venv-python shebang (see `docs/phase3_setup.md` §12).
