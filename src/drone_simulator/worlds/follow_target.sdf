@@ -260,19 +260,66 @@
       </spot>
     </light>
 
-    <!-- ЦЕЛЬ СЛЕЖЕНИЯ (Фаза 3, инкремент 1).
-         Человек из Gazebo Fuel (OpenRobotics/Standing person, CC0). Стоит в 6 м
-         впереди дрона по +X (дрон стартует в (0,0,0) носом на +X, камера mono_cam
-         смотрит вперёд горизонтально с FOV≈100°), лицом к дрону (yaw=π). Static —
-         чтобы не упал под физикой. Меш скачивается с Fuel при первом запуске и
-         кэшируется в ~/.gz/fuel (в git проекта не попадает). Позже здесь же
-         Standing person заменим на ходячий actor с траекторией. -->
-    <include>
-      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Standing person</uri>
-      <name>target_person</name>
-      <pose>6 0 0 0 0 3.14159</pose>
-      <static>true</static>
-    </include>
+    <!-- ЦЕЛЬ СЛЕЖЕНИЯ (Фаза 3, инкремент 4B).
+         Ходячий Gazebo <actor> вместо статичной Standing person (инкр. 1). Скелетная
+         анимация + <script><trajectory> — штатный механизм Gazebo, без плагинов/кода:
+         сервер интерполирует позу актёра между waypoints. Меш walk.dae из Fuel-модели
+         Mingfei/models/actor (тот же, что в штатном gz-sim8 worlds/actor.sdf) —
+         скачивается при первом запуске, кэшируется в ~/.gz/fuel, в git не коммитим.
+
+         z=1.0 в позах — начало скелета на уровне бёдер, ступни на земле (как в
+         референсном actor.sdf). Дрон стартует в (0,0,0) носом на +X, камера mono_cam
+         смотрит вперёд горизонтально (FOV≈100°) → цель ставим впереди по +X.
+
+         У <actor> НЕТ <static> и физики/коллизий — это чисто визуальная цель, что для
+         камеры/детектора и нужно.
+
+         ДЕ-РИСК (4B-1) ПРОЙДЕН (2026-07-05): стоящий actor виден камерой и детектится
+         YOLO как person (detected:true, offset_x≈0). Оба риска §9 закрыты.
+
+         ШАГ 4B-2 (ходьба, сейчас): actor идёт по ЗАМКНУТОМУ КРУГУ, СМЕЩЁННОМУ ВПЕРЁД —
+         центр (8,0), радиус 3 (человек проходит x=5..11, y=-3..3). ВАЖНО: круг НЕ центрирован
+         на точке старта дрона (0,0) — иначе цель «вращалась» бы вокруг дрона и тому хватало
+         бы одного разворота (дрон крутился бы на месте). Здесь человек ПЕРЕМЕЩАЕТСЯ по сцене
+         → дрон вынужден ЛЕТЕТЬ следом (yaw+forward, Ф3-3, без бокового сноса).
+
+         Скорость ~0.25 м/с (медленно): forward-канал контроллера нелинеен по площади bbox
+         (area~1/d²), поэтому на дистанции реакция «вперёд» слабее — медленная цель даёт дрону
+         уверенно поспевать. Круг проходится за ~72 с (окружность 2πR≈18.85 м / 0.25 м/с).
+
+         Актёр повёрнут по направлению движения (yaw = касательная = φ+90°, φ — угол на круге).
+         yaw задан НЕПРЕРЫВНО растущим (4.712→10.996 рад = +2π за круг) — линейная интерполяция
+         даёт плавное вращение по часовой без рывков-перемоток. Траектория ЗАМКНУТА (t=72 совпа-
+         дает с t=0 по позиции) → loop без телепорта. tension сглаживает круг.
+
+         Позиции: φ=180°→(5,0); 225°→(5.88,-2.12); 270°→(8,-3); 315°→(10.12,-2.12);
+                  0°→(11,0); 45°→(10.12,2.12); 90°→(8,3); 135°→(5.88,2.12). -->
+    <actor name="target_person">
+      <skin>
+        <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+        <scale>1.0</scale>
+      </skin>
+      <animation name="walk">
+        <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+        <interpolate_x>true</interpolate_x>
+      </animation>
+      <script>
+        <loop>true</loop>
+        <delay_start>0.0</delay_start>
+        <auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="0.6">
+          <waypoint><time>0</time>  <pose>5.00   0.00 1.0 0 0 4.712</pose></waypoint>
+          <waypoint><time>9</time>  <pose>5.88  -2.12 1.0 0 0 5.498</pose></waypoint>
+          <waypoint><time>18</time> <pose>8.00  -3.00 1.0 0 0 6.283</pose></waypoint>
+          <waypoint><time>27</time> <pose>10.12 -2.12 1.0 0 0 7.069</pose></waypoint>
+          <waypoint><time>36</time> <pose>11.00  0.00 1.0 0 0 7.854</pose></waypoint>
+          <waypoint><time>45</time> <pose>10.12  2.12 1.0 0 0 8.639</pose></waypoint>
+          <waypoint><time>54</time> <pose>8.00   3.00 1.0 0 0 9.425</pose></waypoint>
+          <waypoint><time>63</time> <pose>5.88   2.12 1.0 0 0 10.210</pose></waypoint>
+          <waypoint><time>72</time> <pose>5.00   0.00 1.0 0 0 10.996</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
 
     <spherical_coordinates>
       <surface_model>EARTH_WGS84</surface_model>

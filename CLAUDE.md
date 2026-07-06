@@ -16,10 +16,11 @@ the detailed rationale.
 
 ## Current status
 
-🚧 **Phase 3 in progress — MVP "see → move". Detail & source of truth:
+✅ **Phase 3 complete — MVP "see → move" closed (2026-07-06). Detail & source of truth:
 [`docs/phase3_setup.md`](docs/phase3_setup.md).** (Phase 2 done: PX4 **v1.15.4** SITL
 `gz_x500_mono_cam` flies in Gazebo Harmonic, uXRCE-DDS bridge exposes `/fmu/*` at 100 Hz via
-`px4_msgs` `release/1.15`, camera → `/camera/image` ~30 Hz.)
+`px4_msgs` `release/1.15`, camera → `/camera/image` ~30 Hz.) **Next: Phase 4** — see
+`docs/project_plan.md`.
 
 **Increments 0–4A done (✅)** — full pipeline flies against a static target:
 - `drone_interfaces/Target.msg` — custom interface (`detected`, normalized `offset_x/y`, `area_ratio`).
@@ -33,9 +34,16 @@ the detailed rationale.
   `detector_delay_s`/`detector_device` diag knobs). **Gate 4A passed (2026-07-05):** drone
   arms, takes off, turns to the person, holds distance (`offset_x→0`, `area_ratio≈0.15`).
 
-**Increment 4B is next:** replace the static `Standing person` in `follow_target.sdf` with a
-walking Gazebo `<actor>` (trajectory) so the drone follows a *moving* target; re-check YOLO
-detects the actor mesh. See `docs/phase3_setup.md` §14 (step B).
+**Increment 4B done (✅) — Gate of Phase 3 (2026-07-06, §15):** static `Standing person`
+replaced by a walking Gazebo `<actor>` (`Mingfei/actor` `walk.dae`) on a **forward-offset
+circle** (center `(8,0)`, R=3) — the drone detects the walking person and **physically flies
+after it** across the scene. Two gotchas learned & handled: (1) target path must be **offset
+from the drone's spawn** — an orbit centered on the drone only needs yaw (drone spins in
+place); (2) horizontal camera at 2.5 m can't hold a ground target closer than ~3 m (it drops
+off the frame bottom), so `area_target` was retuned `0.15→0.02` with `kp_forward 3→18`,
+`area_deadband 0.02→0.004`. Also: start `detector_node` **after** camera warm-up
+(`tracking_demo.launch.py detector_delay_s:=8`) to dodge the startup render race. Only
+`follow_target.sdf` + `configs/control/follower.yaml` changed; node code untouched.
 
 ⚠️ **Hybrid-graphics gotcha (was the "won't arm" blocker, now resolved):** run the sim with
 **`GPU=nvidia`** on this laptop. Without it, YOLO on the integrated GPU contends with Gazebo's
