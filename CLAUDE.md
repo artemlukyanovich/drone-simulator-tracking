@@ -19,8 +19,11 @@ the detailed rationale.
 ✅ **Phase 3 complete — MVP "see → move" closed (2026-07-06). Detail & source of truth:
 [`docs/phase3_setup.md`](docs/phase3_setup.md).** (Phase 2 done: PX4 **v1.15.4** SITL
 `gz_x500_mono_cam` flies in Gazebo Harmonic, uXRCE-DDS bridge exposes `/fmu/*` at 100 Hz via
-`px4_msgs` `release/1.15`, camera → `/camera/image` ~30 Hz.) **Next: Phase 4** — see
-`docs/project_plan.md`.
+`px4_msgs` `release/1.15`, camera → `/camera/image` ~30 Hz.) **Next: Phase 4 — plan agreed
+(2026-07-07), not yet implemented.** Reframed as "closer to real conditions" (multi-target
+track+lock, search/reacquire FSM, gimbal + honest distance, PID, safety failsafes, telemetry
+dashboard). Detail & source of truth: [`docs/phase4_setup.md`](docs/phase4_setup.md); summary in
+`docs/project_plan.md` §8.
 
 **Increments 0–4A done (✅)** — full pipeline flies against a static target:
 - `drone_interfaces/Target.msg` — custom interface (`detected`, normalized `offset_x/y`, `area_ratio`).
