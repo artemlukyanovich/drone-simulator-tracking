@@ -18,4 +18,11 @@ detector_node:
 
     # Цель слежения.
     target_classes: ['person']            # COCO-классы цели; [] = любой класс
-    selection: largest                    # выбор одной цели: largest (крупнейший bbox) | closest (ближе к центру)
+    selection: largest                    # detect-only fallback: largest (крупнейший bbox) | closest (ближе к центру)
+
+    # Трекинг (Фаза 4, M1 / Ф4-1). tracking:true → ByteTrack поверх YOLO даёт стабильный
+    # track_id между кадрами; захват — крупнейший подтверждённый трек, далее держим его id
+    # (политика lock в detector_node, Ф4-2). tracking:false → detect-only режим Фазы 3.
+    tracking: true
+    tracker: bytetrack.yaml               # конфиг трекера ultralytics: bytetrack.yaml | botsort.yaml (ReID, запас R1)
+    debug_tracking: false                 # true → лог dets/ids/locked/matched (1 Гц) для разбора поведения трекера

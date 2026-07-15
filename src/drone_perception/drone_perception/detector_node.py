@@ -40,16 +40,32 @@ class DetectorNode(Node):
         # Какие классы считаем целью (COCO-имена). Пусто → любой класс.
         self._target_classes = list(self.declare_parameter('target_classes', ['person']).value)
         # Критерий выбора одной цели из нескольких: "largest" | "closest".
+        # Используется только в detect-only (tracking=False, откат к Фазе 3).
         self._selection = self.declare_parameter('selection', 'largest').value
+        # Фаза 4 (Ф4-1): трекинг ByteTrack и политика захвата одного track_id.
+        tracking = bool(self.declare_parameter('tracking', True).value)
+        tracker = self.declare_parameter('tracker', 'bytetrack.yaml').value
+        # Диагностика трекинга (dets/ids/locked/matched, троттлинг 1 с). Выключено по
+        # умолчанию — инструмент отладки M1/M3, включать при разборе поведения трекера.
+        self._debug_tracking = bool(self.declare_parameter('debug_tracking', False).value)
 
         self._bridge = CvBridge()
         self.get_logger().info(
-            f"Загружаю YOLO: model={model_path} device={device} conf={confidence}")
+            f"Загружаю YOLO: model={model_path} device={device} conf={confidence} "
+            f"tracking={tracking} tracker={tracker}")
         self._detector = ObjectDetector(
             model_path=model_path,
             confidence_threshold=confidence,
             device=device,
+            tracking=tracking,
+            tracker=tracker,
         )
+
+        # id залоченной цели (Ф4-2). None = ещё не захватили. Захватываем крупнейший
+        # подтверждённый трек один раз, далее держим ИМЕННО его; при потере id в кадре
+        # публикуем detected=false (перелов/relock — забота FSM, Инкремент 7). id при этом
+        # не сбрасываем: если ByteTrack вернёт тот же трек, слежение продолжится.
+        self._locked_id = None
 
         # Камера — sensor data (best-effort), поэтому такой же QoS на подписке.
         self._sub = self.create_subscription(
@@ -76,52 +92,102 @@ class DetectorNode(Node):
         target_msg = Target()
         target_msg.header = msg.header  # стамп кадра — для контроля свежести в контроллере
 
-        best = self._select(detections, width, height)
-        if best is not None:
-            (x1, y1, x2, y2), class_name, conf = best
+        target = self._pick_target(detections, width, height)
+
+        # Диагностика M1/M3 (троттлинг 1 с, за флагом debug_tracking): сколько детекций,
+        # какие track_id видны, на кого залочены, совпал ли залоченный. Различает «текучие
+        # id» (ids растут, matched=False) от «нет детекций» (dets=0). Выключено по умолчанию.
+        if self._debug_tracking:
+            ids = sorted(d[3] for d in detections if d[3] is not None)
+            self.get_logger().info(
+                f"dets={len(detections)} ids={ids} locked={self._locked_id} "
+                f"matched={target is not None}",
+                throttle_duration_sec=1.0)
+
+        if target is not None:
+            (x1, y1, x2, y2), class_name, conf, track_id = target
             cx = (x1 + x2) / 2.0
             cy = (y1 + y2) / 2.0
             target_msg.detected = True
             target_msg.offset_x = float((cx - width / 2.0) / (width / 2.0))
             target_msg.offset_y = float((cy - height / 2.0) / (height / 2.0))
             target_msg.area_ratio = float(((x2 - x1) * (y2 - y1)) / (width * height))
+            target_msg.track_id = int(track_id) if track_id is not None else -1
+            target_msg.distance_m = 0.0  # честная дистанция придёт в M3 (Ф4-5)
         else:
             target_msg.detected = False
             target_msg.offset_x = 0.0
             target_msg.offset_y = 0.0
             target_msg.area_ratio = 0.0
+            target_msg.track_id = -1
+            target_msg.distance_m = 0.0
 
         self._target_pub.publish(target_msg)
 
         if self._annotated_pub is not None:
-            self._publish_overlay(frame, best, width, height, msg.header)
+            self._publish_overlay(frame, detections, target, width, height, msg.header)
+
+    def _pick_target(self, detections, width, height):
+        """Выбрать залоченную цель.
+
+        Трекинг (Ф4-2): держим self._locked_id. Ещё не захватили → лочим крупнейший
+        ПОДТВЕРЖДЁННЫЙ трек (у которого есть track_id). Захватили → возвращаем детекцию
+        с этим id; нет его в кадре → None (потеря; id держим, перелов = FSM/Инкр. 7).
+        Detect-only (tracking=False) → откат к выбору Фазы 3 (_select)."""
+        if not self._detector.tracking:
+            return self._select(detections, width, height)
+
+        # Только треки с подтверждённым id (ByteTrack назначает не в первом же кадре).
+        tracked = [d for d in detections if d[3] is not None]
+
+        if self._locked_id is not None:
+            for d in tracked:
+                if d[3] == self._locked_id:
+                    return d
+            return None  # залоченный id не виден в этом кадре — цель потеряна
+
+        # Захвата ещё нет — берём крупнейший подтверждённый трек и лочимся на него.
+        if not tracked:
+            return None
+        target = max(tracked, key=lambda d: (d[0][2] - d[0][0]) * (d[0][3] - d[0][1]))
+        self._locked_id = target[3]
+        self.get_logger().info(f"Захват цели: track_id={self._locked_id}")
+        return target
 
     def _select(self, detections, width, height):
-        """Выбрать одну цель из нескольких. largest = крупнейший bbox,
-        closest = ближайший к центру кадра."""
+        """Выбрать одну цель из нескольких (detect-only, откат Фазы 3). largest =
+        крупнейший bbox, closest = ближайший к центру кадра."""
         if not detections:
             return None
         if self._selection == 'closest':
             fx, fy = width / 2.0, height / 2.0
 
             def dist2(d):
-                (x1, y1, x2, y2), _, _ = d
+                (x1, y1, x2, y2), _, _, _ = d
                 return ((x1 + x2) / 2.0 - fx) ** 2 + ((y1 + y2) / 2.0 - fy) ** 2
 
             return min(detections, key=dist2)
         # default: largest
         return max(detections, key=lambda d: (d[0][2] - d[0][0]) * (d[0][3] - d[0][1]))
 
-    def _publish_overlay(self, frame, best, width, height, header):
+    def _publish_overlay(self, frame, detections, target, width, height, header):
         # Центр кадра (цель наведения) — зелёный крест.
         cx0, cy0 = width // 2, height // 2
         cv2.drawMarker(frame, (cx0, cy0), (0, 255, 0), cv2.MARKER_CROSS, 20, 1)
-        if best is not None:
-            (x1, y1, x2, y2), class_name, conf = best
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.line(frame, (cx0, cy0), ((x1 + x2) // 2, (y1 + y2) // 2), (0, 0, 255), 1)
-            cv2.putText(frame, f"{class_name} {conf:.2f}", (x1, max(0, y1 - 6)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+        # Мини-оверлей M1: рисуем ВСЕ треки, залоченный выделяем (красный/толстый + линия
+        # к центру), прочие — синим/тонким (BGR: синий=(255,0,0), лучше читается на сером
+        # фоне сцены, чем серый). Полный оверлей (дистанция/FSM/FPS) — M6.
+        for d in detections:
+            (x1, y1, x2, y2), class_name, conf, track_id = d
+            locked = d is target
+            color = (0, 0, 255) if locked else (255, 0, 0)
+            thickness = 2 if locked else 1
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+            id_txt = f"id{track_id}" if track_id is not None else "id?"
+            cv2.putText(frame, f"{id_txt} {class_name} {conf:.2f}", (x1, max(0, y1 - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+            if locked:
+                cv2.line(frame, (cx0, cy0), ((x1 + x2) // 2, (y1 + y2) // 2), color, 1)
         out = self._bridge.cv2_to_imgmsg(frame, encoding='bgr8')
         out.header = header
         self._annotated_pub.publish(out)
