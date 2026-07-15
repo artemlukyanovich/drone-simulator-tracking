@@ -5,6 +5,7 @@ detector_node:
   ros__parameters:
     # Топики.
     image_topic: /camera/image          # вход: камера дрона (sensor_msgs/Image, rgb8)
+    camera_info_topic: /camera/camera_info  # вход: intrinsics (f_y для pinhole-дистанции, M3)
     target_topic: /perception/target     # выход: цель (drone_interfaces/Target)
     annotated_topic: /perception/image    # выход: кадр с bbox (для глаз)
     publish_annotated: true               # рисовать и публиковать /perception/image
@@ -26,3 +27,8 @@ detector_node:
     tracking: true
     tracker: bytetrack.yaml               # конфиг трекера ultralytics: bytetrack.yaml | botsort.yaml (ReID, запас R1)
     debug_tracking: false                 # true → лог dets/ids/locked/matched (1 Гц) для разбора поведения трекера
+
+    # Честная дистанция (Фаза 4, M3 / Ф4-5): distance_m = f_y·H_real/h_px.
+    h_real_m: 1.7                         # известный рост цели (actor), метры — база pinhole-оценки
+    distance_ema_alpha: 0.4               # сглаживание EMA (0..1]; 1.0 = без сглаживания, меньше = плавнее (R2)
+    distance_edge_margin_px: 3            # bbox ближе этого к краю кадра → дистанции не доверяем (срез → завышение, R2)

@@ -55,6 +55,14 @@ class FollowerNode(Node):
         self._kp_fwd = float(self.declare_parameter('kp_forward', 3.0).value)
         self._kp_alt = float(self.declare_parameter('kp_altitude', 1.0).value)
         self._area_target = float(self.declare_parameter('area_target', 0.15).value)
+        # M3 (Ф4-5/Ф4-6): forward-канал по ЧЕСТНОЙ дистанции (метры), area — fallback.
+        self._distance_target = float(self.declare_parameter('distance_target_m', 4.0).value)
+        self._kp_distance = float(self.declare_parameter('kp_distance', 0.5).value)
+        self._dist_db = float(self.declare_parameter('distance_deadband_m', 0.3).value)
+        # Guard кадрирования: цель у нижнего края (offset_y большой +, наземная цель при
+        # наклоне вниз приближается → уходит вниз) → форсируем откат назад, чтобы не выпала.
+        self._offset_y_backoff = float(self.declare_parameter('offset_y_backoff', 0.8).value)
+        self._backoff_speed = float(self.declare_parameter('backoff_speed', 0.6).value)
         # Лимиты скоростей.
         self._max_yaw = float(self.declare_parameter('max_yaw_rate', 0.6).value)
         self._max_fwd = float(self.declare_parameter('max_forward_speed', 1.5).value)
@@ -140,18 +148,33 @@ class FollowerNode(Node):
         airborne = altitude > self._min_follow_alt
         if airborne and self._target_valid():
             offset_x = self._target.offset_x
+            offset_y = self._target.offset_y
             area_ratio = self._target.area_ratio
+            distance = self._target.distance_m
 
             # Доворот к цели по offset_x (с мёртвой зоной).
             yawspeed = 0.0
             if abs(offset_x) > self._yaw_db:
                 yawspeed = _clamp(self._yaw_sign * self._kp_yaw * offset_x, self._max_yaw)
 
-            # Дистанция по размеру bbox: мелкий (далеко) → вперёд; крупный → назад.
+            # Forward-канал (M3): держим ЧЕСТНУЮ дистанцию в метрах. Далеко (distance >
+            # target) → вперёд; слишком близко (distance < target) → назад (естественный
+            # откат). Нет честной оценки (distance==0) → fallback на area-прокси (Фаза 3).
             v_fwd = 0.0
-            area_err = self._area_target - area_ratio
-            if abs(area_err) > self._area_db:
-                v_fwd = _clamp(self._fwd_sign * self._kp_fwd * area_err, self._max_fwd)
+            if distance > 0.0:
+                dist_err = distance - self._distance_target
+                if abs(dist_err) > self._dist_db:
+                    v_fwd = _clamp(self._fwd_sign * self._kp_distance * dist_err, self._max_fwd)
+            else:
+                area_err = self._area_target - area_ratio
+                if abs(area_err) > self._area_db:
+                    v_fwd = _clamp(self._fwd_sign * self._kp_fwd * area_err, self._max_fwd)
+
+            # Guard кадрирования: цель у нижнего края → форсируем откат назад (в ту же
+            # «от цели» сторону, что и большой dist_err), чтобы не выпала из кадра. Работает
+            # и без честной дистанции (offset_y доступен всегда, пока detected).
+            if offset_y > self._offset_y_backoff:
+                v_fwd = -self._fwd_sign * self._backoff_speed
 
             # body «вперёд» → NED по текущему heading.
             heading = self._pos.heading

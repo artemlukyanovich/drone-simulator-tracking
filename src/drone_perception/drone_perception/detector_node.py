@@ -16,7 +16,7 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, Image
 
 from drone_interfaces.msg import Target
 
@@ -31,6 +31,8 @@ class DetectorNode(Node):
 
         # --- Параметры (значения по умолчанию переопределяются из yaml) ---
         self._image_topic = self.declare_parameter('image_topic', '/camera/image').value
+        self._camera_info_topic = self.declare_parameter(
+            'camera_info_topic', '/camera/camera_info').value
         self._target_topic = self.declare_parameter('target_topic', '/perception/target').value
         self._annotated_topic = self.declare_parameter('annotated_topic', '/perception/image').value
         self._publish_annotated = self.declare_parameter('publish_annotated', True).value
@@ -48,6 +50,15 @@ class DetectorNode(Node):
         # Диагностика трекинга (dets/ids/locked/matched, троттлинг 1 с). Выключено по
         # умолчанию — инструмент отладки M1/M3, включать при разборе поведения трекера.
         self._debug_tracking = bool(self.declare_parameter('debug_tracking', False).value)
+
+        # Pinhole-дистанция (Фаза 4, M3 / Ф4-5): distance_m = f_y·H_real/h_px.
+        # f_y берём из /camera/camera_info (не хардкодим). H_real — известный рост цели.
+        self._h_real = float(self.declare_parameter('h_real_m', 1.7).value)
+        # EMA-сглаживание шумной оценки (R2): alpha∈(0..1], 1.0 = без сглаживания.
+        self._dist_alpha = float(self.declare_parameter('distance_ema_alpha', 0.4).value)
+        # Доверяем дистанции, только если bbox целиком в кадре (R2): иначе h_px занижен
+        # (голова/ноги срезаны) → дистанция завышена. Отступ от края, пиксели.
+        self._dist_edge_margin = int(self.declare_parameter('distance_edge_margin_px', 3).value)
 
         self._bridge = CvBridge()
         self.get_logger().info(
@@ -67,9 +78,16 @@ class DetectorNode(Node):
         # не сбрасываем: если ByteTrack вернёт тот же трек, слежение продолжится.
         self._locked_id = None
 
+        # Pinhole-состояние: f_y из camera_info и текущая EMA-дистанция.
+        self._fy = None            # фокус (пиксели) по вертикали из camera_info.k[4]
+        self._dist_ema = None      # сглаженная дистанция; None = нет валидной оценки
+
         # Камера — sensor data (best-effort), поэтому такой же QoS на подписке.
         self._sub = self.create_subscription(
             Image, self._image_topic, self._on_image, qos_profile_sensor_data)
+        self._info_sub = self.create_subscription(
+            CameraInfo, self._camera_info_topic, self._on_camera_info,
+            qos_profile_sensor_data)
         self._target_pub = self.create_publisher(Target, self._target_topic, 10)
         self._annotated_pub = (
             self.create_publisher(Image, self._annotated_topic, 10)
@@ -104,17 +122,20 @@ class DetectorNode(Node):
                 f"matched={target is not None}",
                 throttle_duration_sec=1.0)
 
+        distance_m = 0.0
         if target is not None:
             (x1, y1, x2, y2), class_name, conf, track_id = target
             cx = (x1 + x2) / 2.0
             cy = (y1 + y2) / 2.0
+            distance_m = self._estimate_distance((x1, y1, x2, y2), width, height)
             target_msg.detected = True
             target_msg.offset_x = float((cx - width / 2.0) / (width / 2.0))
             target_msg.offset_y = float((cy - height / 2.0) / (height / 2.0))
             target_msg.area_ratio = float(((x2 - x1) * (y2 - y1)) / (width * height))
             target_msg.track_id = int(track_id) if track_id is not None else -1
-            target_msg.distance_m = 0.0  # честная дистанция придёт в M3 (Ф4-5)
+            target_msg.distance_m = float(distance_m)
         else:
+            self._dist_ema = None  # цель ушла — не тянем устаревшую EMA-дистанцию
             target_msg.detected = False
             target_msg.offset_x = 0.0
             target_msg.offset_y = 0.0
@@ -125,7 +146,38 @@ class DetectorNode(Node):
         self._target_pub.publish(target_msg)
 
         if self._annotated_pub is not None:
-            self._publish_overlay(frame, detections, target, width, height, msg.header)
+            self._publish_overlay(frame, detections, target, distance_m, width, height, msg.header)
+
+    def _on_camera_info(self, msg: CameraInfo):
+        # K = [fx 0 cx; 0 fy cy; 0 0 1] (row-major). f_y = K[4]. Наклон камеры —
+        # extrinsic, intrinsics не меняет, поэтому одного чтения достаточно.
+        fy = float(msg.k[4])
+        if fy > 0.0 and self._fy is None:
+            self._fy = fy
+            self.get_logger().info(f"camera_info: f_y={fy:.1f} px (pinhole-дистанция активна)")
+
+    def _estimate_distance(self, bbox, width, height):
+        """Pinhole-дистанция до цели (Ф4-5): distance = f_y·H_real/h_px, с EMA.
+
+        Возвращает метры или 0.0, если оценка недоступна/ненадёжна: нет f_y, нулевая
+        высота bbox, или bbox касается края кадра (голова/ноги срезаны → h_px занижен,
+        дистанция завышена — R2). При разрыве надёжности EMA сбрасывается."""
+        if self._fy is None:
+            return 0.0
+        x1, y1, x2, y2 = bbox
+        h_px = y2 - y1
+        m = self._dist_edge_margin
+        full_in_frame = (x1 >= m and y1 >= m and x2 <= width - m and y2 <= height - m)
+        if h_px <= 0 or not full_in_frame:
+            self._dist_ema = None  # ненадёжно — рвём сглаживание, чтобы не тянуть артефакт
+            return 0.0
+        raw = self._fy * self._h_real / float(h_px)
+        # EMA: seed сырым значением при первом надёжном измерении, далее сглаживаем.
+        if self._dist_ema is None:
+            self._dist_ema = raw
+        else:
+            self._dist_ema = self._dist_alpha * raw + (1.0 - self._dist_alpha) * self._dist_ema
+        return self._dist_ema
 
     def _pick_target(self, detections, width, height):
         """Выбрать залоченную цель.
@@ -170,13 +222,13 @@ class DetectorNode(Node):
         # default: largest
         return max(detections, key=lambda d: (d[0][2] - d[0][0]) * (d[0][3] - d[0][1]))
 
-    def _publish_overlay(self, frame, detections, target, width, height, header):
+    def _publish_overlay(self, frame, detections, target, distance_m, width, height, header):
         # Центр кадра (цель наведения) — зелёный крест.
         cx0, cy0 = width // 2, height // 2
         cv2.drawMarker(frame, (cx0, cy0), (0, 255, 0), cv2.MARKER_CROSS, 20, 1)
-        # Мини-оверлей M1: рисуем ВСЕ треки, залоченный выделяем (красный/толстый + линия
-        # к центру), прочие — синим/тонким (BGR: синий=(255,0,0), лучше читается на сером
-        # фоне сцены, чем серый). Полный оверлей (дистанция/FSM/FPS) — M6.
+        # Мини-оверлей: рисуем ВСЕ треки, залоченный выделяем (красный/толстый + линия
+        # к центру), прочие — синим/тонким (BGR: синий=(255,0,0)). У залоченного — дистанция
+        # (M3). Полный оверлей (FSM/FPS) — M6.
         for d in detections:
             (x1, y1, x2, y2), class_name, conf, track_id = d
             locked = d is target
@@ -184,7 +236,10 @@ class DetectorNode(Node):
             thickness = 2 if locked else 1
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
             id_txt = f"id{track_id}" if track_id is not None else "id?"
-            cv2.putText(frame, f"{id_txt} {class_name} {conf:.2f}", (x1, max(0, y1 - 6)),
+            label = f"{id_txt} {class_name} {conf:.2f}"
+            if locked:
+                label += f" {distance_m:.1f}m" if distance_m > 0.0 else " d=?"
+            cv2.putText(frame, label, (x1, max(0, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
             if locked:
                 cv2.line(frame, (cx0, cy0), ((x1 + x2) // 2, (y1 + y2) // 2), color, 1)

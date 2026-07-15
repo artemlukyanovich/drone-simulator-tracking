@@ -28,6 +28,9 @@ PX4_MODEL="${PX4_MODEL:-gz_x500_mono_cam}"
 export HEADLESS="${HEADLESS:-0}"
 WORLD="${WORLD:-}"
 
+# Корень репозитория (для наших вендорных моделей — напр. наклонённая камера, Ф4-4).
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 if [[ ! -d "${PX4_DIR}" ]]; then
   echo "✗ PX4-Autopilot не найден: ${PX4_DIR}" >&2
   echo "  Склонируй фиксированный тег (см. configs/simulator/stack.md):" >&2
@@ -76,7 +79,10 @@ if [[ -n "${WORLD}" ]]; then
   # Сервер Gazebo должен резолвить модели PX4 (когда gz_bridge спавнит
   # x500_mono_cam) — кладём их в GZ_SIM_RESOURCE_PATH. Fuel-модель цели сервер
   # докачает сам по URI из SDF.
-  export GZ_SIM_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH:-}:${PX4_DIR}/Tools/simulation/gz/models:${PX4_DIR}/Tools/simulation/gz/worlds"
+  # ВАЖНО (Ф4-4): наш каталог моделей идёт ПЕРВЫМ — gz резолвит model://mono_cam в
+  # нашу наклонённую камеру (src/drone_simulator/models/mono_cam), затеняя PX4-шную.
+  # Затеняется только mono_cam (совпадение имени); остальные модели PX4 — как были.
+  export GZ_SIM_RESOURCE_PATH="${REPO_DIR}/src/drone_simulator/models:${GZ_SIM_RESOURCE_PATH:-}:${PX4_DIR}/Tools/simulation/gz/models:${PX4_DIR}/Tools/simulation/gz/worlds"
 
   echo "→ standalone Gazebo: world=${WORLD_NAME} (${WORLD})"
   gz sim -r -v1 -s "${WORLD}" &
