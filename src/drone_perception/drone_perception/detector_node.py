@@ -11,6 +11,8 @@ publish /perception/target (drone_interfaces/Target). Опционально п�
 магических чисел в коде (CLAUDE.md).
 """
 
+import math
+
 import cv2
 import rclpy
 from cv_bridge import CvBridge
@@ -52,8 +54,10 @@ class DetectorNode(Node):
         self._debug_tracking = bool(self.declare_parameter('debug_tracking', False).value)
 
         # Pinhole-дистанция (Фаза 4, M3 / Ф4-5): distance_m = f_y·H_real/h_px.
-        # f_y берём из /camera/camera_info (не хардкодим). H_real — известный рост цели.
+        # f_y берём из /camera/camera_info; если он не приходит — считаем из известного
+        # horizontal_fov и ширины кадра: f_y=(width/2)/tan(hfov/2) (камера квадратнопиксельная).
         self._h_real = float(self.declare_parameter('h_real_m', 1.7).value)
+        self._hfov = float(self.declare_parameter('horizontal_fov_rad', 1.74).value)
         # EMA-сглаживание шумной оценки (R2): alpha∈(0..1], 1.0 = без сглаживания.
         self._dist_alpha = float(self.declare_parameter('distance_ema_alpha', 0.4).value)
         # Доверяем дистанции, только если bbox целиком в кадре (R2): иначе h_px занижен
@@ -159,11 +163,11 @@ class DetectorNode(Node):
     def _estimate_distance(self, bbox, width, height):
         """Pinhole-дистанция до цели (Ф4-5): distance = f_y·H_real/h_px, с EMA.
 
-        Возвращает метры или 0.0, если оценка недоступна/ненадёжна: нет f_y, нулевая
-        высота bbox, или bbox касается края кадра (голова/ноги срезаны → h_px занижен,
-        дистанция завышена — R2). При разрыве надёжности EMA сбрасывается."""
-        if self._fy is None:
-            return 0.0
+        Возвращает метры или 0.0, если оценка ненадёжна: нулевая высота bbox или bbox
+        касается края кадра (голова/ноги срезаны → h_px занижен, дистанция завышена — R2).
+        При разрыве надёжности EMA сбрасывается."""
+        # f_y: из camera_info, иначе из горизонтального FOV и ширины кадра (fx=fy).
+        fy = self._fy if self._fy is not None else (width / 2.0) / math.tan(self._hfov / 2.0)
         x1, y1, x2, y2 = bbox
         h_px = y2 - y1
         m = self._dist_edge_margin
@@ -171,7 +175,7 @@ class DetectorNode(Node):
         if h_px <= 0 or not full_in_frame:
             self._dist_ema = None  # ненадёжно — рвём сглаживание, чтобы не тянуть артефакт
             return 0.0
-        raw = self._fy * self._h_real / float(h_px)
+        raw = fy * self._h_real / float(h_px)
         # EMA: seed сырым значением при первом надёжном измерении, далее сглаживаем.
         if self._dist_ema is None:
             self._dist_ema = raw
