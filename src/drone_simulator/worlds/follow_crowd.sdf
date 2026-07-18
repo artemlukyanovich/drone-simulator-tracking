@@ -267,17 +267,24 @@
 
     <!-- ЦЕЛЬ (target_person) — БЛИЖНИЙ круг: центр (7,0), R=2.5 (x:4.5..9.5, y:-2.5..2.5).
          Старт в ближней точке (4.5,0) ~4.5 м от дрона → крупнейший bbox на момент захвата
-         → политика lock (Ф4-2) берёт именно его. Скорость ~0.22 м/с (2πR≈15.7 м / 72 с) —
-         как в 4B, медленно, чтобы forward-канал успевал. yaw=φ+90° непрерывно растёт
-         (4.712→10.996 = +2π) → плавно; траектория замкнута (t=72 == t=0) → loop без телепорта.
-         Механизм/меш/z — как в follow_target.sdf (walk.dae из Fuel, z=1.0, без физики). -->
+         → политика lock (Ф4-2) берёт именно его. Скорость ~0.31 м/с (2πR≈15.7 м / 50 с):
+         период поднят 72→50 с (+44%) по запросу 2026-07-18 — на 0.22 м/с цель шла слишком
+         вяло. 50 с выбрано так, чтобы НЕ кратилось с периодами дистракторов (60 и 54 с):
+         иначе пересечения повторялись бы в одной фазе и стресс-тест трекинга выродился бы.
+         Запас по управлению есть: max_forward_speed=1.5 м/с ≫ 0.31 м/с. yaw=φ+90° непрерывно
+         растёт (4.712→10.996 = +2π) → плавно; траектория замкнута (t=50 == t=0) → loop без телепорта.
+         Механизм/z — как в follow_target.sdf (z=1.0, без физики), но меш вендорный и свой
+         у каждого (Ф4-12), а не общий walk.dae из Fuel. -->
     <actor name="target_person">
+      <!-- Облик (Ф4-12): вендорный меш actor_target — КРАСНЫЙ свитер, тёмно-синие джинсы.
+           scale=1.0 намеренно: рост цели — база pinhole-дистанции M3 (h_real_m=1.7),
+           менять его без синхронной правки detector.yaml нельзя (риск R6). -->
       <skin>
-        <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+        <filename>model://actor_target/meshes/walk.dae</filename>
         <scale>1.0</scale>
       </skin>
       <animation name="walk">
-        <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+        <filename>model://actor_target/meshes/walk.dae</filename>
         <interpolate_x>true</interpolate_x>
       </animation>
       <script>
@@ -285,15 +292,15 @@
         <delay_start>0.0</delay_start>
         <auto_start>true</auto_start>
         <trajectory id="0" type="walk" tension="0.6">
-          <waypoint><time>0</time>  <pose>4.50   0.00 1.0 0 0 4.712</pose></waypoint>
-          <waypoint><time>9</time>  <pose>5.23  -1.77 1.0 0 0 5.498</pose></waypoint>
-          <waypoint><time>18</time> <pose>7.00  -2.50 1.0 0 0 6.283</pose></waypoint>
-          <waypoint><time>27</time> <pose>8.77  -1.77 1.0 0 0 7.069</pose></waypoint>
-          <waypoint><time>36</time> <pose>9.50   0.00 1.0 0 0 7.854</pose></waypoint>
-          <waypoint><time>45</time> <pose>8.77   1.77 1.0 0 0 8.639</pose></waypoint>
-          <waypoint><time>54</time> <pose>7.00   2.50 1.0 0 0 9.425</pose></waypoint>
-          <waypoint><time>63</time> <pose>5.23   1.77 1.0 0 0 10.210</pose></waypoint>
-          <waypoint><time>72</time> <pose>4.50   0.00 1.0 0 0 10.996</pose></waypoint>
+          <waypoint><time>0</time>     <pose>4.50   0.00 1.0 0 0 4.712</pose></waypoint>
+          <waypoint><time>6.25</time>  <pose>5.23  -1.77 1.0 0 0 5.498</pose></waypoint>
+          <waypoint><time>12.5</time>  <pose>7.00  -2.50 1.0 0 0 6.283</pose></waypoint>
+          <waypoint><time>18.75</time> <pose>8.77  -1.77 1.0 0 0 7.069</pose></waypoint>
+          <waypoint><time>25</time>    <pose>9.50   0.00 1.0 0 0 7.854</pose></waypoint>
+          <waypoint><time>31.25</time> <pose>8.77   1.77 1.0 0 0 8.639</pose></waypoint>
+          <waypoint><time>37.5</time>  <pose>7.00   2.50 1.0 0 0 9.425</pose></waypoint>
+          <waypoint><time>43.75</time> <pose>5.23   1.77 1.0 0 0 10.210</pose></waypoint>
+          <waypoint><time>50</time>    <pose>4.50   0.00 1.0 0 0 10.996</pose></waypoint>
         </trajectory>
       </script>
     </actor>
@@ -303,12 +310,14 @@
          дальней точке (14,0). Проходя по y, регулярно пересекает азимут цели → его бокс
          «наезжает» на залоченный в кадре (стресс ByteTrack). yaw=φ+90° непрерывно (1.571→7.854). -->
     <actor name="distractor_1">
+      <!-- Облик (Ф4-12): actor_distractor_a — ЖЁЛТЫЙ свитер, тёмно-зелёные джинсы,
+           scale=0.92 (≈1.56 м, заметно НИЖЕ цели: рост — вторая ось различия для ReID). -->
       <skin>
-        <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
-        <scale>1.0</scale>
+        <filename>model://actor_distractor_a/meshes/walk.dae</filename>
+        <scale>0.92</scale>
       </skin>
       <animation name="walk">
-        <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+        <filename>model://actor_distractor_a/meshes/walk.dae</filename>
         <interpolate_x>true</interpolate_x>
       </animation>
       <script>
@@ -333,12 +342,14 @@
          (2πR≈28.3 м / 54 → 0.52 м/с). Старт сбоку (11,4.5). Разные периоды цели/дистракторов
          (72/60/54) → фазы пересечений «плывут», не повторяются синхронно. yaw=φ+90° (3.142→9.425). -->
     <actor name="distractor_2">
+      <!-- Облик (Ф4-12): actor_distractor_b — ГОЛУБОЙ свитер, светло-серые джинсы
+           (единственный светлый низ в сцене), scale=1.08 (≈1.84 м, ВЫШЕ цели). -->
       <skin>
-        <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
-        <scale>1.0</scale>
+        <filename>model://actor_distractor_b/meshes/walk.dae</filename>
+        <scale>1.08</scale>
       </skin>
       <animation name="walk">
-        <filename>https://fuel.gazebosim.org/1.0/Mingfei/models/actor/tip/files/meshes/walk.dae</filename>
+        <filename>model://actor_distractor_b/meshes/walk.dae</filename>
         <interpolate_x>true</interpolate_x>
       </animation>
       <script>

@@ -1,0 +1,10 @@
+<?xml version="1.0" ?>
+<!-- СГЕНЕРИРОВАНО scripts/make_actor_variants.py — руками не править.
+     Заглушка: реально используется только meshes/walk.dae, который мир подключает как
+     <skin>/<animation> у <actor>. Модель нужна, чтобы резолвился model://actor_distractor_a/... -->
+<sdf version="1.9">
+  <model name="actor_distractor_a">
+    <static>true</static>
+    <link name="link"/>
+  </model>
+</sdf>
