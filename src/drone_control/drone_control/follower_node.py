@@ -76,9 +76,9 @@ class FollowerNode(Node):
         # M2 (Ф4-7/Ф4-11): поведение при потере цели.
         self._lost_hold_s = float(self.declare_parameter('lost_hold_s', 2.0).value)
         self._initial_hold_s = float(self.declare_parameter('initial_hold_s', 5.0).value)
-        self._alt_tolerance = float(self.declare_parameter('follow_altitude_tolerance_m', 0.3).value)
+        self._hold_after_loss_s = float(self.declare_parameter('hold_after_loss_s', 2.0).value)
+        self._alt_tolerance = float(self.declare_parameter('follow_altitude_tolerance_m', 0.1).value)
         self._search_yaw_rate = float(self.declare_parameter('search_yaw_rate', 0.35).value)
-        self._search_enabled = bool(self.declare_parameter('search_enabled', True).value)
 
         # QoS PX4 (как в офиц. примере px4_ros_com): best-effort + transient_local.
         px4_qos = QoSProfile(
@@ -165,6 +165,12 @@ class FollowerNode(Node):
         ready = self._altitude_ready(altitude)
         self._update_state(ready)
 
+        # Диагностика высоты: без неё «дрон летит низко» — это ощущение, а не число.
+        # Троттлинг 2 с, чтобы не топить лог.
+        self.get_logger().info(
+            f"alt={altitude:.2f}/{self._target_alt:.2f} м  vz={vz:+.2f}  state={self._state}",
+            throttle_duration_sec=2.0)
+
         if ready and self._target_valid():
             offset_x = self._target.offset_x
             offset_y = self._target.offset_y
@@ -206,14 +212,16 @@ class FollowerNode(Node):
         # Цели нет. Вместо «просто висим» (Фаза 3) — активное поведение по состоянию FSM.
         # Горизонтальную скорость держим в нуле в обоих случаях: уходить с места вслепую
         # опасно и бессмысленно, ищем доворотом.
+        if self._state == 'HOLD':
+            # Замерли: курс НЕ меняем. Если цель просто зашла за другого человека, она
+            # вернётся туда же — важно продолжать смотреть именно туда.
+            return 0.0, 0.0, vz, 0.0
         if self._state == 'LOST':
-            if not self._ever_tracked:
-                return 0.0, 0.0, vz, 0.0   # цели ещё не было — доворачивать некуда, висим
-            # Доворачиваем ТУДА, где цель видели последней: чаще всего она просто ушла за
-            # край кадра, и небольшого доворота хватает, чтобы вернуть её в поле зрения.
+            # Доворачиваем ТУДА, где цель видели последней: похоже, она ушла за край
+            # кадра, и небольшого доворота хватает, чтобы вернуть её в поле зрения.
             direction = 1.0 if self._last_offset_x >= 0.0 else -1.0
             return 0.0, 0.0, vz, self._yaw_sign * direction * self._search_yaw_rate
-        if self._state == 'SEARCH' and self._search_enabled:
+        if self._state == 'SEARCH':
             # Бессрочное вращение на месте в ту же сторону — обзор 360°. Ф4-11: ждём
             # ИМЕННО своего; ReID не пропустит чужого, поэтому крутиться можно сколько нужно.
             direction = 1.0 if self._last_offset_x >= 0.0 else -1.0
@@ -221,22 +229,27 @@ class FollowerNode(Node):
         return 0.0, 0.0, vz, 0.0
 
     def _altitude_ready(self, altitude):
-        """Набрана ли рабочая высота — только тогда разрешено слежение.
+        """Разрешено ли слежение по высоте.
 
-        Раньше порогом был `min_follow_altitude_m` (1.0 м), и дрон начинал преследование
-        уже на высоте груди человека: летел между людьми и рисковал столкнуться. Теперь
-        ждём выхода на `target_altitude_m` с допуском.
+        Гейт работает ТОЛЬКО до первого захвата: дрон обязан сперва выйти на
+        `target_altitude_m`, иначе он начинал преследование на середине набора и летел за
+        человеком слишком низко. Дальше флаг ЗАЩЁЛКИВАЕТСЯ и высота больше не проверяется —
+        иначе слежение прерывалось бы на каждом манёвре, где дрон немного просел.
 
-        Флаг ЗАЩЁЛКИВАЕТСЯ: набрали высоту один раз — дальше слежение не выключается от
-        того, что дрон просел на полметра в манёвре. Жёсткий пол `min_follow_altitude_m`
-        при этом остаётся: ниже него слежение отключается в любом случае."""
+        Отдельной выдержки на «устаканивание» не нужно: `vz = kp_altitude · ошибка`, поэтому
+        попадание в узкий допуск само по себе означает, что вертикальная скорость уже мала.
+        Жёсткий пол `min_follow_altitude_m` остаётся как страховка на все случаи."""
         if altitude <= self._min_follow_alt:
             return False
-        if not self._altitude_reached and altitude >= self._target_alt - self._alt_tolerance:
+        if self._altitude_reached:
+            return True
+        if altitude >= self._target_alt - self._alt_tolerance:
             self._altitude_reached = True
             self.get_logger().info(
-                f"Рабочая высота набрана ({altitude:.2f} м) — слежение разрешено.")
-        return self._altitude_reached
+                f"Рабочая высота набрана ({altitude:.2f} из {self._target_alt:.2f} м) — "
+                f"слежение разрешено.")
+            return True
+        return False
 
     def _update_state(self, ready):
         """Переходы FSM. Состояние меняется только здесь — один источник истины."""
@@ -251,21 +264,32 @@ class FollowerNode(Node):
             self._lost_since = None
             self._ever_tracked = True
         else:
-            # Цели нет. Сначала LOST (доворот к последнему направлению), и лишь если она не
-            # вернулась — SEARCH. Пауза не даёт одиночному пропуску детекции запустить
-            # вращение и самим же вращением увести цель из кадра.
+            # Цели нет. Три фазы по нарастанию активности — каждая следующая рискованнее:
             #
-            # Выдержка РАЗНАЯ. До первого захвата (`initial_hold_s`, ~5 с) дрон просто висит
-            # и осматривается: сразу после взлёта человек часто уже в кадре, и поспешное
-            # вращение уводило его прочь — дрон успевал сделать полный оборот прежде чем
-            # кого-то заметить. После того как цель однажды велась, реагируем быстро
-            # (`lost_hold_s`): там дорога каждая секунда, цель уходит.
-            hold = self._lost_hold_s if self._ever_tracked else self._initial_hold_s
+            #   HOLD   — ЗАМЕРЕТЬ, курс не менять. Самая частая причина потери — цель
+            #            пересеклась с другим человеком и на пару секунд скрылась. Доворот в
+            #            этот момент отворачивает нас от неё же: она вернётся туда, куда мы
+            #            уже не смотрим. Поэтому сперва просто ждём на месте.
+            #   LOST   — доворот в сторону последнего появления: цель, похоже, ушла за край
+            #            кадра, небольшой доворот вернёт её в поле зрения.
+            #   SEARCH — вращение на месте, обзор 360°, бессрочно (Ф4-11).
+            #
+            # До первого захвата фаза LOST пропускается: доворачивать некуда, цели ещё не
+            # было. Дрон просто висит `initial_hold_s` и осматривается — иначе он успевал
+            # сделать полный оборот прежде, чем заметить стоящего перед ним человека.
             now = self.get_clock().now()
             if self._lost_since is None:
                 self._lost_since = now
             lost_for = (now - self._lost_since).nanoseconds * 1e-9
-            self._state = 'LOST' if lost_for < hold else 'SEARCH'
+
+            if not self._ever_tracked:
+                self._state = 'HOLD' if lost_for < self._initial_hold_s else 'SEARCH'
+            elif lost_for < self._hold_after_loss_s:
+                self._state = 'HOLD'
+            elif lost_for < self._hold_after_loss_s + self._lost_hold_s:
+                self._state = 'LOST'
+            else:
+                self._state = 'SEARCH'
 
         if self._state != prev:
             self.get_logger().info(f"FSM: {prev} → {self._state}")
