@@ -59,6 +59,10 @@ class FollowerNode(Node):
         self._distance_target = float(self.declare_parameter('distance_target_m', 4.0).value)
         self._kp_distance = float(self.declare_parameter('kp_distance', 0.5).value)
         self._dist_db = float(self.declare_parameter('distance_deadband_m', 0.3).value)
+        # M4 (Ф4-6): I и D канала дистанции. Дефолт 0 → чистый P, как в M3.
+        self._ki_distance = float(self.declare_parameter('ki_distance', 0.0).value)
+        self._kd_distance = float(self.declare_parameter('kd_distance', 0.0).value)
+        self._i_limit_distance = float(self.declare_parameter('i_limit_distance', 2.0).value)
         # Guard кадрирования: цель у нижнего края (offset_y большой +, наземная цель при
         # наклоне вниз приближается → уходит вниз) → форсируем откат назад, чтобы не выпала.
         self._offset_y_backoff = float(self.declare_parameter('offset_y_backoff', 0.8).value)
@@ -120,6 +124,10 @@ class FollowerNode(Node):
         self._last_offset_x = 0.0      # где видели цель последний раз → куда доворачивать
         self._altitude_reached = False  # защёлка «рабочая высота набрана» (см. _altitude_ready)
         self._ever_tracked = False      # была ли цель хоть раз в TRACK — влияет на выдержку
+        # Состояние PID канала дистанции (M4). Сбрасывается при выходе из TRACK — см. _reset_pid.
+        self._pid_integral = 0.0
+        self._pid_prev_err = None
+        self._pid_last_time = None
 
         self._timer = self.create_timer(1.0 / self._rate, self._on_tick)
         self.get_logger().info(
@@ -188,8 +196,9 @@ class FollowerNode(Node):
             v_fwd = 0.0
             if distance > 0.0:
                 dist_err = distance - self._distance_target
-                if abs(dist_err) > self._dist_db:
-                    v_fwd = _clamp(self._fwd_sign * self._kp_distance * dist_err, self._max_fwd)
+                # Мёртвая зона обрабатывается ВНУТРИ регулятора (см. _distance_pid): она
+                # глушит P, но не интеграл — иначе возникает автоколебание.
+                v_fwd = _clamp(self._fwd_sign * self._distance_pid(dist_err), self._max_fwd)
             else:
                 area_err = self._area_target - area_ratio
                 if abs(area_err) > self._area_db:
@@ -227,6 +236,71 @@ class FollowerNode(Node):
             direction = 1.0 if self._last_offset_x >= 0.0 else -1.0
             return 0.0, 0.0, vz, self._yaw_sign * direction * self._search_yaw_rate
         return 0.0, 0.0, vz, 0.0
+
+    def _distance_pid(self, error):
+        """PID канала дистанции (M4 / Ф4-6): ошибка [м] → скорость вперёд/назад [м/с].
+
+        Зачем I. Чистый P физически не может свести ошибку к нулю за ДВИЖУЩЕЙСЯ целью: чтобы
+        дрон ехал со скоростью цели, ему нужна ненулевая ошибка, кормящая член `kp·e`. При
+        v_цели≈0.31 м/с и kp=0.5 равновесие приходится на e≈0.62 м — отсюда наблюдаемые
+        4.6–4.8 м при уставке 4.0. Интеграл копит ошибку и берёт постоянную составляющую
+        скорости на себя: когда e→0, накопитель НЕ обнуляется и продолжает выдавать нужные
+        0.31 м/с. P после этого занимается только отклонениями.
+
+        Зачем D. Реагирует на скорость изменения ошибки — тормозит заранее, гасит перелёт и
+        раскачку, которую провоцирует I. Производная берётся от `distance_m`, уже сглаженной
+        EMA в детекторе (`distance_ema_alpha`), поэтому отдельного фильтра здесь нет: если D
+        начнёт шуметь, крутить надо ту EMA, а не заводить второй фильтр.
+
+        При ki=kd=0 (дефолт) выражение вырождается в прежний P — поведение Фазы 3/M3."""
+        now = self.get_clock().now()
+        dt = (0.0 if self._pid_last_time is None
+              else (now - self._pid_last_time).nanoseconds * 1e-9)
+        self._pid_last_time = now
+
+        # Первый тик после сброса (dt==0) или неправдоподобно большой разрыв (нода
+        # подвисла/цель долго отсутствовала) — интеграл и производную пропускаем, иначе
+        # один битый интервал даст скачок команды.
+        # Мёртвая зона глушит P и D, но НЕ интеграл. Это принципиально: если обнулять
+        # накопитель при входе в зону (так было сделано сначала), возникает автоколебание —
+        # дрон подходит, попадает в зону, теряет накопленную скорость, встаёт, цель убегает,
+        # и всё повторяется. На модели канала с запаздыванием: размах 0.34 м при сбросе
+        # против 0.00 м, если интеграл оставить жить (проверено 2026-07-18).
+        in_deadband = abs(error) <= self._dist_db
+
+        if dt <= 0.0 or dt > 1.0:
+            # Первый тик после сброса или битый интервал (нода подвисла): интеграл и
+            # производную пропускаем, иначе один разрыв даст скачок команды.
+            self._pid_prev_err = error
+            return 0.0 if in_deadband else self._kp_distance * error
+
+        self._pid_integral += error * dt
+        # Anti-windup: зажим накопителя. Без него долгое отставание (цель убежала, дрон
+        # упёрся в max_forward_speed) раздувает интеграл, и при возврате цели дрон рвёт
+        # вперёд по инерции накопленного.
+        self._pid_integral = _clamp(self._pid_integral, self._i_limit_distance)
+
+        derivative = 0.0 if self._pid_prev_err is None else (error - self._pid_prev_err) / dt
+        self._pid_prev_err = error
+
+        if in_deadband:
+            # Внутри зоны едем ТОЛЬКО на накопленном: это и есть постоянная скорость цели.
+            # При ki=0 (дефолт) выход равен нулю — поведение M3 сохраняется в точности.
+            return self._ki_distance * self._pid_integral
+
+        return (self._kp_distance * error
+                + self._ki_distance * self._pid_integral
+                + self._kd_distance * derivative)
+
+    def _reset_pid(self):
+        """Обнулить состояние PID. Вызывается при выходе из TRACK и в мёртвой зоне.
+
+        Критично для стыковки с FSM (7A): за время HOLD/LOST/SEARCH цели нет, ошибка не
+        обновляется, и сохранённый интеграл к моменту перезахвата стал бы мусором — дрон
+        дёрнулся бы вперёд сразу после того, как снова увидел человека."""
+        self._pid_integral = 0.0
+        self._pid_prev_err = None
+        self._pid_last_time = None
 
     def _altitude_ready(self, altitude):
         """Разрешено ли слежение по высоте.
@@ -290,6 +364,11 @@ class FollowerNode(Node):
                 self._state = 'LOST'
             else:
                 self._state = 'SEARCH'
+
+        if self._state != 'TRACK':
+            # Вне слежения ошибка дистанции не обновляется — накопленный интеграл к моменту
+            # перезахвата стал бы мусором и дёрнул бы дрона вперёд (стык M4 с FSM 7A).
+            self._reset_pid()
 
         if self._state != prev:
             self.get_logger().info(f"FSM: {prev} → {self._state}")

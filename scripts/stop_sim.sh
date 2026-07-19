@@ -18,6 +18,15 @@ PATTERNS=(
   "MicroXRCEAgent"             # мост PX4 ↔ ROS2 (агент)
   "parameter_bridge"           # мост камеры Gazebo → ROS2
   "tail -n +1 -f /tmp/px4cmds" # вспомогательный канал команд (если использовался)
+  # --- Ноды пайплайна (Фазы 3–4). Добавлены 2026-07-19: скрипт писался в Фазе 2, когда
+  # этих нод ещё не было, и рапортовал «гасить нечего», оставляя их жить. Это опасно
+  # именно с Фазы 4: detector_node держит на видеокарте YOLO + OpenCLIP (~350 МБ, Ф4-13),
+  # и переживший прогон детектор конкурирует с рендером Gazebo — задокументированный
+  # сценарий §9 phase3_setup (деградация сенсорики → «Compass Sensor 0 missing»).
+  "lib/drone_perception/detector_node"
+  "lib/drone_control/follower_node"
+  "ros2 launch drone_bringup"
+  "ros2 launch drone_simulator"
 )
 
 joined="$(IFS='|'; echo "${PATTERNS[*]}")"
