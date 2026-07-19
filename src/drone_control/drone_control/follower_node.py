@@ -73,6 +73,10 @@ class FollowerNode(Node):
         # Знаки (frame-неоднозначность — крутит/едет не туда → поменять в конфиге).
         self._yaw_sign = float(self.declare_parameter('yaw_sign', 1.0).value)
         self._fwd_sign = float(self.declare_parameter('forward_sign', 1.0).value)
+        # M2 (Ф4-7/Ф4-11): поведение при потере цели.
+        self._lost_hold_s = float(self.declare_parameter('lost_hold_s', 2.0).value)
+        self._search_yaw_rate = float(self.declare_parameter('search_yaw_rate', 0.35).value)
+        self._search_enabled = bool(self.declare_parameter('search_enabled', True).value)
 
         # QoS PX4 (как в офиц. примере px4_ros_com): best-effort + transient_local.
         px4_qos = QoSProfile(
@@ -103,6 +107,15 @@ class FollowerNode(Node):
         self._tick = 0
         self._engaged_logged = False
         self._last_engage_time = None
+
+        # --- FSM (Ф4-7) ---
+        # TAKEOFF → набор высоты; TRACK → ведём цель; LOST → цель пропала, доворачиваем в
+        # сторону, где её видели (короткая пауза против ложных срабатываний на моргании
+        # детекции); SEARCH → медленное вращение на месте, БЕССРОЧНО (Ф4-11: ищем своего,
+        # а не берём другого). Выход из SEARCH по таймауту в RTL — это M5, не здесь.
+        self._state = 'TAKEOFF'
+        self._lost_since = None        # когда цель пропала (для перехода LOST→SEARCH)
+        self._last_offset_x = 0.0      # где видели цель последний раз → куда доворачивать
 
         self._timer = self.create_timer(1.0 / self._rate, self._on_tick)
         self.get_logger().info(
@@ -146,6 +159,8 @@ class FollowerNode(Node):
 
         altitude = -self._pos.z
         airborne = altitude > self._min_follow_alt
+        self._update_state(airborne)
+
         if airborne and self._target_valid():
             offset_x = self._target.offset_x
             offset_y = self._target.offset_y
@@ -176,14 +191,52 @@ class FollowerNode(Node):
             if offset_y > self._offset_y_backoff:
                 v_fwd = -self._fwd_sign * self._backoff_speed
 
+            self._last_offset_x = offset_x
+
             # body «вперёд» → NED по текущему heading.
             heading = self._pos.heading
             vx = v_fwd * math.cos(heading)
             vy = v_fwd * math.sin(heading)
             return vx, vy, vz, yawspeed
 
-        # Цель потеряна/на земле — горизонталь держим в нуле, высоту регулируем.
+        # Цели нет. Вместо «просто висим» (Фаза 3) — активное поведение по состоянию FSM.
+        # Горизонтальную скорость держим в нуле в обоих случаях: уходить с места вслепую
+        # опасно и бессмысленно, ищем доворотом.
+        if self._state == 'LOST':
+            # Доворачиваем ТУДА, где цель видели последней: чаще всего она just ушла за
+            # край кадра, и небольшого доворота хватает, чтобы вернуть её в поле зрения.
+            direction = 1.0 if self._last_offset_x >= 0.0 else -1.0
+            return 0.0, 0.0, vz, self._yaw_sign * direction * self._search_yaw_rate
+        if self._state == 'SEARCH' and self._search_enabled:
+            # Бессрочное вращение на месте в ту же сторону — обзор 360°. Ф4-11: ждём
+            # ИМЕННО своего; ReID не пропустит чужого, поэтому крутиться можно сколько нужно.
+            direction = 1.0 if self._last_offset_x >= 0.0 else -1.0
+            return 0.0, 0.0, vz, self._yaw_sign * direction * self._search_yaw_rate
         return 0.0, 0.0, vz, 0.0
+
+    def _update_state(self, airborne):
+        """Переходы FSM. Состояние меняется только здесь — один источник истины."""
+        prev = self._state
+        has_target = airborne and self._target_valid()
+
+        if not airborne:
+            self._state = 'TAKEOFF'
+            self._lost_since = None
+        elif has_target:
+            self._state = 'TRACK'
+            self._lost_since = None
+        else:
+            # Цели нет. Сначала LOST (короткий доворот к последнему направлению), и лишь
+            # если она не вернулась — SEARCH. Пауза нужна, чтобы одиночный пропуск детекции
+            # не запускал вращение и сам же не уводил цель из кадра.
+            now = self.get_clock().now()
+            if self._lost_since is None:
+                self._lost_since = now
+            lost_for = (now - self._lost_since).nanoseconds * 1e-9
+            self._state = 'LOST' if lost_for < self._lost_hold_s else 'SEARCH'
+
+        if self._state != prev:
+            self.get_logger().info(f"FSM: {prev} → {self._state}")
 
     def _target_valid(self):
         if self._target is None or self._target_time is None or not self._target.detected:
