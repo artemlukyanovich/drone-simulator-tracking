@@ -127,6 +127,12 @@ class DetectorNode(Node):
         # считается подтверждённым лишь после непрерывного слежения confirm_after_s.
         self._lock_started = None
         self._identity_confirmed = False
+        # ПОСТОЯННЫЙ id сопровождаемого человека (Ф4-13). Присваивается при записи эталона
+        # облика и переживает перезахват: track_id после потери становится другим, object_id
+        # — нет. Растёт только когда мы берём НОВУЮ цель (первый захват либо сброс
+        # неподтверждённого лока), т.е. смена object_id = смена человека, а не трека.
+        self._object_id = -1
+        self._object_seq = 0
 
         # Pinhole-состояние: f_y из camera_info и текущая EMA-дистанция.
         self._fy = None            # фокус (пиксели) по вертикали из camera_info.k[4]
@@ -185,6 +191,7 @@ class DetectorNode(Node):
             target_msg.area_ratio = float(((x2 - x1) * (y2 - y1)) / (width * height))
             target_msg.track_id = int(track_id) if track_id is not None else -1
             target_msg.distance_m = float(distance_m)
+            target_msg.object_id = int(self._object_id)
         else:
             self._dist_ema = None  # цель ушла — не тянем устаревшую EMA-дистанцию
             target_msg.detected = False
@@ -193,6 +200,9 @@ class DetectorNode(Node):
             target_msg.area_ratio = 0.0
             target_msg.track_id = -1
             target_msg.distance_m = 0.0
+            # object_id НЕ обнуляем: цель не видна, но мы всё ещё ведём ИМЕННО её —
+            # именно это и отличает «потеряли своего» от «цели нет вообще».
+            target_msg.object_id = int(self._object_id)
 
         self._target_pub.publish(target_msg)
 
@@ -288,9 +298,10 @@ class DetectorNode(Node):
                 else:
                     emb = None
                 if emb is not None:
-                    self._identity.lock(emb)
+                    self._seed_identity(emb)
                     self.get_logger().info(
-                        f"Захват цели: track_id={self._locked_id}, облик запомнен (ReID).")
+                        f"Захват цели: object_id={self._object_id} "
+                        f"(track_id={self._locked_id}), облик запомнен (ReID).")
                 else:
                     self.get_logger().info(
                         f"Захват цели: track_id={self._locked_id}; облик пока не записан "
@@ -363,11 +374,21 @@ class DetectorNode(Node):
         if emb is None:
             return
         if need_seed:
-            self._identity.lock(emb)
+            self._seed_identity(emb)
             self.get_logger().info(
-                f"Облик цели записан (дозахват, track_id={self._locked_id}) — ReID активен.")
+                f"Облик цели записан (дозахват): object_id={self._object_id}, "
+                f"track_id={self._locked_id} — ReID активен.")
         else:
             self._identity.reinforce(emb)
+
+    def _seed_identity(self, embedding):
+        """Записать эталон облика и выдать НОВЫЙ постоянный object_id.
+
+        Вызывается только когда мы берём новую цель. Перезахват сюда НЕ приходит — там
+        человек тот же, меняется лишь track_id, и object_id обязан остаться прежним."""
+        self._identity.lock(embedding)
+        self._object_seq += 1
+        self._object_id = self._object_seq
 
     def _relock(self, frame, tracked):
         """Найти среди кандидатов СВОЮ цель по эталону облика. None = своего нет.
@@ -407,9 +428,12 @@ class DetectorNode(Node):
 
         target = candidates[idx]
         self._locked_id = target[3]
+        # object_id НЕ трогаем — человек тот же, сменился только трек. В этом и смысл
+        # постоянного идентификатора (Ф4-13).
         self.get_logger().info(
-            f"ПЕРЕЗАХВАТ по облику: свой найден, track_id={self._locked_id}, "
-            f"сходство {score:.3f} ≥ {self._identity.similarity_threshold}")
+            f"ПЕРЕЗАХВАТ по облику: свой найден — object_id={self._object_id} остаётся, "
+            f"новый track_id={self._locked_id}, сходство {score:.3f} ≥ "
+            f"{self._identity.similarity_threshold}")
         return target
 
     def _select(self, detections, width, height):
@@ -441,9 +465,12 @@ class DetectorNode(Node):
             color = (0, 0, 255) if locked else (255, 0, 0)
             thickness = 2 if locked else 1
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-            id_txt = f"id{track_id}" if track_id is not None else "id?"
+            id_txt = f"trk{track_id}" if track_id is not None else "trk?"
             label = f"{id_txt} {class_name} {conf:.2f}"
             if locked:
+                # У залоченного впереди ПОСТОЯННЫЙ идентификатор: он не меняется при
+                # перезахвате, в отличие от trk.
+                label = f"obj#{self._object_id} {label}"
                 label += f" {distance_m:.1f}m" if distance_m > 0.0 else " d=?"
             cv2.putText(frame, label, (x1, max(0, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
@@ -459,10 +486,13 @@ class DetectorNode(Node):
                 status, tint = 'ReID: OFF', (0, 165, 255)
             elif target is not None:
                 state = 'LOCKED' if self._identity_confirmed else 'LOCKING'
-                status, tint = f'{state} id={self._locked_id}', (0, 200, 0)
+                # ПОСТОЯННЫЙ object_id — крупно и первым; временный track_id — справочно,
+                # чтобы было видно, что после перезахвата меняется именно он, а не личность.
+                status = f'{state} obj#{self._object_id} (trk {self._locked_id})'
+                tint = (0, 200, 0)
             elif self._identity.locked:
                 score = f'{self._last_score:.2f}' if self._last_score is not None else '-'
-                status = (f'SEARCHING my target (best {score} < '
+                status = (f'SEARCHING obj#{self._object_id} (best {score} < '
                           f'{self._identity.similarity_threshold:.2f})')
                 tint = (0, 0, 255)
             else:
