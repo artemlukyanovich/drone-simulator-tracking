@@ -75,6 +75,8 @@ class FollowerNode(Node):
         self._fwd_sign = float(self.declare_parameter('forward_sign', 1.0).value)
         # M2 (Ф4-7/Ф4-11): поведение при потере цели.
         self._lost_hold_s = float(self.declare_parameter('lost_hold_s', 2.0).value)
+        self._initial_hold_s = float(self.declare_parameter('initial_hold_s', 5.0).value)
+        self._alt_tolerance = float(self.declare_parameter('follow_altitude_tolerance_m', 0.3).value)
         self._search_yaw_rate = float(self.declare_parameter('search_yaw_rate', 0.35).value)
         self._search_enabled = bool(self.declare_parameter('search_enabled', True).value)
 
@@ -116,6 +118,8 @@ class FollowerNode(Node):
         self._state = 'TAKEOFF'
         self._lost_since = None        # когда цель пропала (для перехода LOST→SEARCH)
         self._last_offset_x = 0.0      # где видели цель последний раз → куда доворачивать
+        self._altitude_reached = False  # защёлка «рабочая высота набрана» (см. _altitude_ready)
+        self._ever_tracked = False      # была ли цель хоть раз в TRACK — влияет на выдержку
 
         self._timer = self.create_timer(1.0 / self._rate, self._on_tick)
         self.get_logger().info(
@@ -158,10 +162,10 @@ class FollowerNode(Node):
         vz = _clamp(self._kp_alt * (z_target - self._pos.z), self._max_vz)
 
         altitude = -self._pos.z
-        airborne = altitude > self._min_follow_alt
-        self._update_state(airborne)
+        ready = self._altitude_ready(altitude)
+        self._update_state(ready)
 
-        if airborne and self._target_valid():
+        if ready and self._target_valid():
             offset_x = self._target.offset_x
             offset_y = self._target.offset_y
             area_ratio = self._target.area_ratio
@@ -203,7 +207,9 @@ class FollowerNode(Node):
         # Горизонтальную скорость держим в нуле в обоих случаях: уходить с места вслепую
         # опасно и бессмысленно, ищем доворотом.
         if self._state == 'LOST':
-            # Доворачиваем ТУДА, где цель видели последней: чаще всего она just ушла за
+            if not self._ever_tracked:
+                return 0.0, 0.0, vz, 0.0   # цели ещё не было — доворачивать некуда, висим
+            # Доворачиваем ТУДА, где цель видели последней: чаще всего она просто ушла за
             # край кадра, и небольшого доворота хватает, чтобы вернуть её в поле зрения.
             direction = 1.0 if self._last_offset_x >= 0.0 else -1.0
             return 0.0, 0.0, vz, self._yaw_sign * direction * self._search_yaw_rate
@@ -214,26 +220,52 @@ class FollowerNode(Node):
             return 0.0, 0.0, vz, self._yaw_sign * direction * self._search_yaw_rate
         return 0.0, 0.0, vz, 0.0
 
-    def _update_state(self, airborne):
+    def _altitude_ready(self, altitude):
+        """Набрана ли рабочая высота — только тогда разрешено слежение.
+
+        Раньше порогом был `min_follow_altitude_m` (1.0 м), и дрон начинал преследование
+        уже на высоте груди человека: летел между людьми и рисковал столкнуться. Теперь
+        ждём выхода на `target_altitude_m` с допуском.
+
+        Флаг ЗАЩЁЛКИВАЕТСЯ: набрали высоту один раз — дальше слежение не выключается от
+        того, что дрон просел на полметра в манёвре. Жёсткий пол `min_follow_altitude_m`
+        при этом остаётся: ниже него слежение отключается в любом случае."""
+        if altitude <= self._min_follow_alt:
+            return False
+        if not self._altitude_reached and altitude >= self._target_alt - self._alt_tolerance:
+            self._altitude_reached = True
+            self.get_logger().info(
+                f"Рабочая высота набрана ({altitude:.2f} м) — слежение разрешено.")
+        return self._altitude_reached
+
+    def _update_state(self, ready):
         """Переходы FSM. Состояние меняется только здесь — один источник истины."""
         prev = self._state
-        has_target = airborne and self._target_valid()
+        has_target = ready and self._target_valid()
 
-        if not airborne:
+        if not ready:
             self._state = 'TAKEOFF'
             self._lost_since = None
         elif has_target:
             self._state = 'TRACK'
             self._lost_since = None
+            self._ever_tracked = True
         else:
-            # Цели нет. Сначала LOST (короткий доворот к последнему направлению), и лишь
-            # если она не вернулась — SEARCH. Пауза нужна, чтобы одиночный пропуск детекции
-            # не запускал вращение и сам же не уводил цель из кадра.
+            # Цели нет. Сначала LOST (доворот к последнему направлению), и лишь если она не
+            # вернулась — SEARCH. Пауза не даёт одиночному пропуску детекции запустить
+            # вращение и самим же вращением увести цель из кадра.
+            #
+            # Выдержка РАЗНАЯ. До первого захвата (`initial_hold_s`, ~5 с) дрон просто висит
+            # и осматривается: сразу после взлёта человек часто уже в кадре, и поспешное
+            # вращение уводило его прочь — дрон успевал сделать полный оборот прежде чем
+            # кого-то заметить. После того как цель однажды велась, реагируем быстро
+            # (`lost_hold_s`): там дорога каждая секунда, цель уходит.
+            hold = self._lost_hold_s if self._ever_tracked else self._initial_hold_s
             now = self.get_clock().now()
             if self._lost_since is None:
                 self._lost_since = now
             lost_for = (now - self._lost_since).nanoseconds * 1e-9
-            self._state = 'LOST' if lost_for < self._lost_hold_s else 'SEARCH'
+            self._state = 'LOST' if lost_for < hold else 'SEARCH'
 
         if self._state != prev:
             self.get_logger().info(f"FSM: {prev} → {self._state}")
