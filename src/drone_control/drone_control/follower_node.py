@@ -25,6 +25,8 @@ from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 
+from std_msgs.msg import Float32
+
 from px4_msgs.msg import (OffboardControlMode, TrajectorySetpoint,
                           VehicleCommand, VehicleLocalPosition, VehicleStatus)
 
@@ -83,6 +85,12 @@ class FollowerNode(Node):
         self._hold_after_loss_s = float(self.declare_parameter('hold_after_loss_s', 2.0).value)
         self._alt_tolerance = float(self.declare_parameter('follow_altitude_tolerance_m', 0.1).value)
         self._search_yaw_rate = float(self.declare_parameter('search_yaw_rate', 0.35).value)
+        # M5 (Ф4-8): слой безопасности. Геозона/потолок — мягкий клэмп (не выдаём setpoint
+        # за пределы); «батарея» (таймер от ARM) и долгий SEARCH — уводят в штатный RTL PX4.
+        self._geofence_radius = float(self.declare_parameter('geofence_radius_m', 15.0).value)
+        self._max_altitude = float(self.declare_parameter('max_altitude_m', 5.0).value)
+        self._battery_s = float(self.declare_parameter('battery_s', 60.0).value)
+        self._lost_rtl_timeout_s = float(self.declare_parameter('lost_rtl_timeout_s', 25.0).value)
 
         # QoS PX4 (как в офиц. примере px4_ros_com): best-effort + transient_local.
         px4_qos = QoSProfile(
@@ -97,6 +105,11 @@ class FollowerNode(Node):
             TrajectorySetpoint, '/fmu/in/trajectory_setpoint', px4_qos)
         self._command_pub = self.create_publisher(
             VehicleCommand, '/fmu/in/vehicle_command', px4_qos)
+        # M5: остаток «батареи» (с) для оверлея детектора. Отдельный топик — ноды не
+        # импортируют друг друга (правило §7). Дефолт совпадает с подпиской детектора.
+        battery_topic = self.declare_parameter(
+            'battery_topic', '/follower/battery_remaining_s').value
+        self._battery_pub = self.create_publisher(Float32, battery_topic, 10)
 
         self.create_subscription(
             VehicleLocalPosition, '/fmu/out/vehicle_local_position',
@@ -128,6 +141,12 @@ class FollowerNode(Node):
         self._pid_integral = 0.0
         self._pid_prev_err = None
         self._pid_last_time = None
+        # --- M5 (Ф4-8): слой безопасности ---
+        self._home_x = None            # позиция в момент ARM → центр геозоны и таймера
+        self._home_y = None
+        self._arm_time = None          # момент ARM → старт таймера «батареи»
+        self._search_since = None      # когда вошли в SEARCH → таймаут долгого поиска
+        self._rtl_active = False       # сработал фейлсейф: управление отдано RTL PX4 (терминально)
 
         self._timer = self.create_timer(1.0 / self._rate, self._on_tick)
         self.get_logger().info(
@@ -148,9 +167,18 @@ class FollowerNode(Node):
 
     # --- Основной offboard-цикл ---
     def _on_tick(self):
+        self._publish_battery()   # M5: остаток «батареи» для оверлея (шлём всегда, даже в RTL)
+
+        # M5: после срабатывания фейлсейфа управление отдано штатному RTL PX4. Ничего НЕ
+        # стримим — иначе поток offboard-setpoint'ов перетянул бы режим обратно и подрался
+        # бы с RTL. Дрон сам летит домой и садится; состояние терминальное.
+        if self._rtl_active:
+            return
+
         self._publish_offboard_mode()
 
         vx, vy, vz, yawspeed = self._compute_setpoint()
+        vx, vy, vz = self._apply_safety(vx, vy, vz)   # M5: мягкий клэмп геозоны/потолка
         self._publish_setpoint(vx, vy, vz, yawspeed)
 
         # После прогрева стрима — добиваемся offboard + arm (порядок §5). ПОВТОРЯЕМ,
@@ -159,6 +187,8 @@ class FollowerNode(Node):
         self._tick += 1
         if self._tick >= int(self._arm_after_s * self._rate):
             self._ensure_offboard_and_armed()
+
+        self._check_failsafes()   # M5: «батарея»/долгий LOST → RTL
 
     def _compute_setpoint(self):
         """Вернуть (vx, vy, vz, yawspeed) в NED. Без позиции/телеметрии — hover."""
@@ -302,6 +332,87 @@ class FollowerNode(Node):
         self._pid_prev_err = None
         self._pid_last_time = None
 
+    # --- M5 (Ф4-8): слой безопасности ---
+    def _apply_safety(self, vx, vy, vz):
+        """Мягкий клэмп setpoint'а под границы (Ф4-8): не выдаём команду за пределы.
+
+        Геозона — ТОЛЬКО клэмп, без RTL (решение Ф4-8): у границы гасим лишь РАДИАЛЬНУЮ
+        (наружу) составляющую горизонтальной скорости, тангенциальную оставляем — дрон
+        может идти вдоль границы за целью, но наружу не выходит. Потолок высоты — гасим
+        подъём при достижении max_altitude_m."""
+        if self._pos is None:
+            return vx, vy, vz
+
+        # Потолок: altitude≥max и команда вверх (vz<0 в NED) → режем вверх.
+        altitude = -self._pos.z
+        if altitude >= self._max_altitude and vz < 0.0:
+            vz = 0.0
+            self.get_logger().warn(
+                f"altitude: {altitude:.1f}≥{self._max_altitude:.0f} м — режу подъём",
+                throttle_duration_sec=2.0)
+
+        # Геозона: за радиусом от дома гасим радиальную (наружу) часть скорости.
+        if self._home_x is not None:
+            dx = self._pos.x - self._home_x
+            dy = self._pos.y - self._home_y
+            r = math.hypot(dx, dy)
+            if r >= self._geofence_radius and r > 1e-3:
+                nx, ny = dx / r, dy / r               # единичный вектор «наружу»
+                v_out = vx * nx + vy * ny              # проекция скорости на «наружу»
+                if v_out > 0.0:                        # едем наружу — вычесть радиальную часть
+                    vx -= v_out * nx
+                    vy -= v_out * ny
+                    self.get_logger().warn(
+                        f"geofence: r={r:.1f}≥{self._geofence_radius:.0f} м — режу скорость наружу",
+                        throttle_duration_sec=2.0)
+        return vx, vy, vz
+
+    def _check_failsafes(self):
+        """Триггеры RTL (Ф4-8): «батарея» (таймер от ARM) и долгий поиск цели.
+
+        Геозона/потолок сюда НЕ входят — они мягко клэмпятся (Ф4-8), а не уводят в RTL.
+        «Батарея» — имитация таймером (R5), не модель разряда PX4."""
+        if self._rtl_active or self._arm_time is None:
+            return
+        now = self.get_clock().now()
+
+        flight_s = (now - self._arm_time).nanoseconds * 1e-9
+        if flight_s >= self._battery_s:
+            self._trigger_rtl(f"«батарея» истекла ({flight_s:.0f} с ≥ {self._battery_s:.0f} с)")
+            return
+
+        # Долгий поиск: SEARCH дольше таймаута → сдаёмся и возвращаемся. Выход из
+        # бессрочного SEARCH — забота M5, а не M2 (Ф4-11).
+        if self._state == 'SEARCH' and self._search_since is not None:
+            search_s = (now - self._search_since).nanoseconds * 1e-9
+            if search_s >= self._lost_rtl_timeout_s:
+                self._trigger_rtl(
+                    f"цель не найдена за {search_s:.0f} с поиска (≥ {self._lost_rtl_timeout_s:.0f} с)")
+
+    def _publish_battery(self):
+        """Опубликовать остаток «батареи» (с) для оверлея детектора.
+
+        До ARM — полный заряд (таймер ещё не пошёл); в полёте — обратный отсчёт от
+        battery_s; после RTL — 0 (детектор покажет 'BATTERY -> RTL')."""
+        if self._rtl_active:
+            remaining = 0.0
+        elif self._arm_time is None:
+            remaining = self._battery_s
+        else:
+            elapsed = (self.get_clock().now() - self._arm_time).nanoseconds * 1e-9
+            remaining = max(0.0, self._battery_s - elapsed)
+        msg = Float32()
+        msg.data = float(remaining)
+        self._battery_pub.publish(msg)
+
+    def _trigger_rtl(self, reason):
+        """Уйти в терминальный RTL: один раз командуем PX4 возврат, дальше offboard-поток
+        глушится в _on_tick — режим отдан штатному RTL PX4, назад в TRACK не возвращаемся."""
+        self._rtl_active = True
+        self._state = 'RTL'
+        self.get_logger().warn(f"ФЕЙЛСЕЙФ → RTL: {reason}. Возврат к точке старта и посадка.")
+        self._send_command(VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
+
     def _altitude_ready(self, altitude):
         """Разрешено ли слежение по высоте.
 
@@ -370,6 +481,13 @@ class FollowerNode(Node):
             # перезахвата стал бы мусором и дёрнул бы дрона вперёд (стык M4 с FSM 7A).
             self._reset_pid()
 
+        # M5: засекаем непрерывное время в SEARCH для таймаута долгого поиска (_check_failsafes).
+        if self._state == 'SEARCH':
+            if prev != 'SEARCH':
+                self._search_since = self.get_clock().now()
+        else:
+            self._search_since = None
+
         if self._state != prev:
             self.get_logger().info(f"FSM: {prev} → {self._state}")
 
@@ -407,6 +525,17 @@ class FollowerNode(Node):
                  and self._status.arming_state == VehicleStatus.ARMING_STATE_ARMED)
         offboard = (self._status is not None
                     and self._status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD)
+
+        # M5: зафиксировать «дом» (центр геозоны) и запустить таймер «батареи» в момент ARM.
+        if armed and self._arm_time is None:
+            self._arm_time = self.get_clock().now()
+            if self._pos is not None:
+                self._home_x = self._pos.x
+                self._home_y = self._pos.y
+            self.get_logger().info(
+                f"ARM подтверждён — дом=({(self._home_x or 0.0):.1f}, {(self._home_y or 0.0):.1f}), "
+                f"геозона {self._geofence_radius:.0f} м, таймер «батареи» {self._battery_s:.0f} с пошёл.")
+
         if armed and offboard:
             if not self._engaged_logged:
                 self.get_logger().info("PX4 в OFFBOARD и ARMED — слежение активно.")

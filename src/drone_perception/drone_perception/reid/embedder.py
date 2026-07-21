@@ -52,7 +52,14 @@ class ObjectEmbedder:
     def _say(self, msg, warn=False):
         if self._log is None:
             return
-        (self._log.warning if warn else self._log.info)(msg)
+        # warning и info — РАЗНЫМИ строками намеренно: rclpy привязывает уровень к месту
+        # вызова (файл+строка) и падает 'Logger severity cannot be changed between calls',
+        # если с одной строки уходят оба уровня. На пути OOM-отката (warn, затем info
+        # «ReID готов») это роняло detector_node целиком.
+        if warn:
+            self._log.warning(msg)
+        else:
+            self._log.info(msg)
 
     def _resolve_device(self, device):
         try:
@@ -65,23 +72,50 @@ class ObjectEmbedder:
         return device
 
     def _load_model(self) -> bool:
-        """Загрузить модель. False = ReID недоступен (нода продолжит работать без него)."""
+        """Загрузить модель. False = ReID недоступен (нода продолжит работать без него).
+
+        При нехватке видеопамяти НЕ сдаёмся сразу: освобождаем занятое и повторяем попытку на
+        CPU. Причина — реальный отказ 2026-07-19: во время записи демо-видео рекордер занял
+        видеопамять, ReID не влез (свободно 25 МБ из 3.7 ГБ), но его недогруженные ~370 МБ
+        остались висеть, и следом не смогла подняться YOLO — нода упала целиком. Освобождение
+        кэша делает отказ ReID безвредным для детектора, а откат на CPU сохраняет и сам ReID:
+        он вызывается редко (Ф4-15), и ~34 мс на кроп здесь не критичны."""
         try:
             import open_clip
         except ImportError:
             self._say('ReID ВЫКЛЮЧЕН: нет open-clip-torch (pip install -r requirements.txt). '
                       'Детектор работает, но перезахват цели после потери невозможен.', warn=True)
             return False
+
+        for device in ([self.device, 'cpu'] if self.device != 'cpu' else ['cpu']):
+            try:
+                self._model, _, self._preprocess = open_clip.create_model_and_transforms(
+                    self.model_name, pretrained=self.pretrained, device=device)
+                self._model.eval()
+            except Exception as exc:                              # noqa: BLE001
+                self._model = self._preprocess = None
+                self._free_cuda()
+                if device != 'cpu':
+                    self._say(f'ReID на {device} не поднялся ({type(exc).__name__}), '
+                              f'пробую на cpu. Причина: {exc}', warn=True)
+                    continue
+                self._say(f'ReID ВЫКЛЮЧЕН: не удалось загрузить {self.model_name}/'
+                          f'{self.pretrained}: {exc}', warn=True)
+                return False
+            self.device = device
+            self._say(f'ReID готов: {self.model_name}/{self.pretrained} на {device}')
+            return True
+        return False
+
+    @staticmethod
+    def _free_cuda():
+        """Вернуть видеопамять, занятую неудавшейся загрузкой, — иначе её не хватит YOLO."""
         try:
-            self._model, _, self._preprocess = open_clip.create_model_and_transforms(
-                self.model_name, pretrained=self.pretrained, device=self.device)
-            self._model.eval()
-        except Exception as exc:                                  # noqa: BLE001
-            self._say(f'ReID ВЫКЛЮЧЕН: не удалось загрузить {self.model_name}/{self.pretrained}: '
-                      f'{exc}', warn=True)
-            return False
-        self._say(f'ReID готов: {self.model_name}/{self.pretrained} на {self.device}')
-        return True
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:                                         # noqa: BLE001
+            pass
 
     def embed(self, crop: np.ndarray) -> Optional[np.ndarray]:
         """Эмбеддинг одного BGR-кропа. None — если ReID недоступен или кроп пуст."""

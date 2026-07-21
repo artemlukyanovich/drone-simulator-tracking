@@ -19,6 +19,7 @@ from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import Float32
 
 from drone_interfaces.msg import Target
 
@@ -148,6 +149,12 @@ class DetectorNode(Node):
         self._annotated_pub = (
             self.create_publisher(Image, self._annotated_topic, 10)
             if self._publish_annotated else None)
+        # M5: остаток «батареи» от follower'а — для таймера обратного отсчёта на оверлее.
+        # None = follower ещё не публикует (топик не поднят / нода не запущена).
+        self._battery_remaining = None
+        battery_topic = self.declare_parameter(
+            'battery_topic', '/follower/battery_remaining_s').value
+        self.create_subscription(Float32, battery_topic, self._on_battery, 10)
 
         self.get_logger().info(
             f"detector_node готов: {self._image_topic} → {self._target_topic}"
@@ -452,6 +459,9 @@ class DetectorNode(Node):
         # default: largest
         return max(detections, key=lambda d: (d[0][2] - d[0][0]) * (d[0][3] - d[0][1]))
 
+    def _on_battery(self, msg: Float32):
+        self._battery_remaining = float(msg.data)
+
     def _publish_overlay(self, frame, detections, target, distance_m, width, height, header):
         # Центр кадра (цель наведения) — зелёный крест.
         cx0, cy0 = width // 2, height // 2
@@ -499,6 +509,21 @@ class DetectorNode(Node):
                 status, tint = 'waiting for target', (200, 200, 200)
             cv2.putText(frame, status, (8, height - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, tint, 2, cv2.LINE_AA)
+        # M5: таймер «батареи» до RTL (значение публикует follower). Рисуем всегда, в
+        # правом верхнем углу — независимо от того, ведём ли мы цель.
+        if self._battery_remaining is not None:
+            rem = self._battery_remaining
+            if rem <= 0.0:
+                btxt, bcol = 'BATTERY -> RTL', (0, 0, 255)
+            else:
+                mm, ss = divmod(int(rem), 60)
+                btxt = f'BAT {mm:d}:{ss:02d}'
+                # зелёный > 30 с, жёлтый > 10 с, иначе красный
+                bcol = (0, 200, 0) if rem > 30 else (0, 165, 255) if rem > 10 else (0, 0, 255)
+            (tw, _), _ = cv2.getTextSize(btxt, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.putText(frame, btxt, (width - tw - 8, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, bcol, 2, cv2.LINE_AA)
+
         out = self._bridge.cv2_to_imgmsg(frame, encoding='bgr8')
         out.header = header
         self._annotated_pub.publish(out)
