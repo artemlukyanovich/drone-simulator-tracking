@@ -17,37 +17,24 @@ data/action flow, domain concepts) see [`docs/architecture.md`](docs/architectur
 
 ## Current status
 
-✅ **Phase 3 complete — MVP "see → move" closed (2026-07-06). Detail & source of truth:
-[`docs/phase3_setup.md`](docs/phase3_setup.md).** (Phase 2 done: PX4 **v1.15.4** SITL
-`gz_x500_mono_cam` flies in Gazebo Harmonic, uXRCE-DDS bridge exposes `/fmu/*` at 100 Hz via
-`px4_msgs` `release/1.15`, camera → `/camera/image` ~30 Hz.) **Next: Phase 4 — plan agreed
-(2026-07-07), not yet implemented.** Reframed as "closer to real conditions" (multi-target
-track+lock, search/reacquire FSM, gimbal + honest distance, PID, safety failsafes, telemetry
-dashboard). Detail & source of truth: [`docs/phase4_setup.md`](docs/phase4_setup.md); summary in
-`docs/project_plan.md` §8.
+✅ **Phase 4 complete (2026-07-22) — all modules M1–M6 delivered.** The drone tracks and
+follows a *specific* person in a crowd of distractors, holds an honest metric distance, actively
+re-searches and reacquires its target after loss (never substitutes another person), behaves
+safely (geofence clamp, altitude ceiling, RTL on "battery"/long search), and shows live metrics
+(FSM state, FPS, inference latency) on the camera overlay. Source of truth & full implementation
+log: [`docs/phase4_setup.md`](docs/phase4_setup.md) §8; summary in `docs/project_plan.md` §8.
+**For how the system is built — per-module breakdown, full data/action flow, domain concepts —
+see [`docs/architecture.md`](docs/architecture.md); this section only tracks phase status.**
 
-**Increments 0–4A done (✅)** — full pipeline flies against a static target:
-- `drone_interfaces/Target.msg` — custom interface (`detected`, normalized `offset_x/y`, `area_ratio`).
-- Own world `src/drone_simulator/worlds/follow_target.sdf` (Fuel "Standing person"), launched
-  **standalone**: `WORLD=… scripts/run_px4_sitl.sh` (PX4 attaches via `PX4_GZ_STANDALONE`;
-  `<world>` must be named `default`).
-- `detector_node` — YOLO over `/camera/image` → `/perception/target` (+ `/perception/image`).
-- `follower_node` — offboard loop + P-controller, **validated with a fake target** (arms,
-  takes off, reacts correctly).
-- `tracking_demo.launch.py` — real pipeline (`follower_node`+`detector_node`+configs, with
-  `detector_delay_s`/`detector_device` diag knobs). **Gate 4A passed (2026-07-05):** drone
-  arms, takes off, turns to the person, holds distance (`offset_x→0`, `area_ratio≈0.15`).
+Phase 3 ("see → move" MVP, static then walking target) closed 2026-07-06 —
+[`docs/phase3_setup.md`](docs/phase3_setup.md). Phase 2 (PX4 **v1.15.4** SITL `gz_x500_mono_cam`
+in Gazebo Harmonic, uXRCE-DDS bridge exposing `/fmu/*` at 100 Hz via `px4_msgs` `release/1.15`,
+camera → `/camera/image` ~30 Hz) closed 2026-06-11 — `docs/phase2_setup.md`.
 
-**Increment 4B done (✅) — Gate of Phase 3 (2026-07-06, §15):** static `Standing person`
-replaced by a walking Gazebo `<actor>` (`Mingfei/actor` `walk.dae`) on a **forward-offset
-circle** (center `(8,0)`, R=3) — the drone detects the walking person and **physically flies
-after it** across the scene. Two gotchas learned & handled: (1) target path must be **offset
-from the drone's spawn** — an orbit centered on the drone only needs yaw (drone spins in
-place); (2) horizontal camera at 2.5 m can't hold a ground target closer than ~3 m (it drops
-off the frame bottom), so `area_target` was retuned `0.15→0.02` with `kp_forward 3→18`,
-`area_deadband 0.02→0.004`. Also: start `detector_node` **after** camera warm-up
-(`tracking_demo.launch.py detector_delay_s:=8`) to dodge the startup render race. Only
-`follow_target.sdf` + `configs/control/follower.yaml` changed; node code untouched.
+**No open next-phase work is planned** beyond an optional demo-video recording (manual, by the
+user). Before making non-trivial changes, check `docs/phase4_setup.md` §8 (Журнал реализации) for
+the diagnosis behind current parameter values — several were tuned against measured runs, not
+guessed.
 
 ⚠️ **Hybrid-graphics gotcha (was the "won't arm" blocker, now resolved):** run the sim with
 **`GPU=nvidia`** on this laptop. Without it, YOLO on the integrated GPU contends with Gazebo's
@@ -106,14 +93,19 @@ ros2 launch drone_bringup tracking_demo.launch.py
 - Configuration goes in `configs/`, separate from code. No magic numbers in code.
 - Docs are written in Russian; code and identifiers in English.
 
-## Architecture (target)
+## Architecture (minimal sketch — full detail in docs/architecture.md)
 
 ```
 Gazebo (physics + camera) → ros_gz_bridge → /camera/image
-  → drone_perception:detector_node → /perception/target (bbox + offset from frame center)
+  → drone_perception:detector_node → /perception/target (bbox/offset + track_id/object_id/distance_m)
   → drone_control:follower_node → OffboardControlMode + TrajectorySetpoint (via uXRCE-DDS)
   → PX4 SITL → motors in Gazebo
 ```
+
+This is the skeleton only. The actual pipeline (as of Phase 4) also includes ByteTrack
+multi-target tracking, OpenCLIP-based re-identification, a follower FSM (TAKEOFF/TRACK/HOLD/
+LOST/SEARCH/RTL), PID distance control, and a safety layer (geofence/altitude/battery/RTL) — see
+[`docs/architecture.md`](docs/architecture.md) for the full per-module breakdown and data flow.
 
 ## First risk (closed in Phase 2)
 

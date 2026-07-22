@@ -10,9 +10,13 @@ Drone → Camera → Detector → Tracking → Decision → Move
 
 ## Status
 
-🚧 **Early scaffold.** Repository structure and planning are in place; no runtime code yet.
-The authoritative plan, decisions, and principles live in
-[`docs/project_plan.md`](docs/project_plan.md) (Russian) — read it first.
+✅ **Phase 4 complete (2026-07-22).** The full pipeline is implemented and working: the drone
+detects, locks onto, and follows a specific person in a crowd of distractors, holds an honest
+metric distance (PID), re-searches and reacquires its target after loss (via re-identification —
+never substitutes another person), enforces safety limits (geofence, altitude ceiling, RTL on
+timeout), and shows live metrics on the camera overlay. See [`docs/architecture.md`](docs/architecture.md)
+for how it works, or [`docs/project_plan.md`](docs/project_plan.md) (Russian) for the decisions
+and phased history.
 
 ## Goal
 
@@ -28,6 +32,8 @@ on what I see"*.
 - **uXRCE-DDS** + `px4_msgs` — native PX4 ↔ ROS2 bridge
 - **ros_gz_bridge** — Gazebo camera → ROS2 `sensor_msgs/Image`
 - **YOLO** (ultralytics) — detector (logic ported from `project_1`)
+- **ByteTrack** (built into ultralytics) — multi-target tracking → stable `track_id`
+- **OpenCLIP ViT-B-32** — re-identification (persistent `object_id` across track loss)
 
 > ⚠️ PX4 / Gazebo / ROS2 versions are tightly coupled. Pin a compatible triple before
 > writing code (see `docs/project_plan.md` §4, §11).
@@ -92,19 +98,36 @@ for details.
 
 ## How to run
 
-Phase 1 skeleton works today — `colcon build` is green and the launch file brings up two
-stub heartbeat nodes (`detector_node`, `follower_node`). No simulator/perception/control
-logic yet (Phases 2–3).
+Build with `scripts/build.sh` (not bare `colcon build` — nodes with pip deps need the
+venv-python shebang; see `docs/phase3_setup.md` §12). On hybrid-graphics laptops, run the
+simulator with `GPU=nvidia` (see `docs/phase3_setup.md` §9).
 
 ```bash
-colcon build
-source install/setup.bash    # re-source in a new shell, or after adding/renaming packages
-ros2 launch drone_bringup tracking_demo.launch.py
-# verify in another sourced terminal: `ros2 node list` → /detector_node, /follower_node
+scripts/build.sh
+scripts/stop_sim.sh          # clear any leftover processes from a previous run
+
+# Terminal 1 — Gazebo + PX4 SITL (no ROS2 sourcing needed here)
+WORLD=src/drone_simulator/worlds/follow_crowd.sdf GPU=nvidia scripts/run_px4_sitl.sh
+
+# Terminal 2 — ROS2 side: XRCE-DDS agent + camera bridge
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch drone_simulator sim.launch.py
+
+# Terminal 3 — the actual pipeline: follower_node + detector_node
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch drone_bringup tracking_demo.launch.py detector_delay_s:=8
+
+# Optional viewer — annotated camera feed (boxes, ID, distance, FSM, FPS, battery)
+ros2 run rqt_image_view rqt_image_view /perception/image
 ```
+
+Full verification steps and gotchas per module are in `docs/phase4_setup.md` §6/§8.
 
 ## Roadmap
 
-See [`docs/project_plan.md`](docs/project_plan.md) §8 for the phased plan (Phase 0 →
-environment & versions, Phase 1 → ROS2 skeleton, Phase 2 → simulator de-risk, Phase 3 →
-"see → move" MVP, Phase 4 → PID / tracking / ReID).
+All planned phases are complete: Phase 0 (environment & versions) → Phase 1 (ROS2 skeleton) →
+Phase 2 (simulator de-risk) → Phase 3 ("see → move" MVP) → Phase 4 (multi-target tracking,
+re-identification, PID, safety layer, live metrics). See
+[`docs/project_plan.md`](docs/project_plan.md) §8 for the full phased history and rationale.
+No next phase is currently planned; a demo-video recording is the only open item (manual, by
+the maintainer).
