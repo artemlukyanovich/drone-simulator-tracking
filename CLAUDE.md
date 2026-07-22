@@ -12,7 +12,8 @@ is `Camera → Detector → Tracking → Decision → Move`.
 **Source of truth for decisions, architecture, and the phased plan is
 [`docs/project_plan.md`](docs/project_plan.md) (written in Russian). Read it before making
 non-trivial changes.** This CLAUDE.md is a quick operational summary; `project_plan.md` is
-the detailed rationale.
+the detailed rationale. For a full architecture overview (per-module breakdown, end-to-end
+data/action flow, domain concepts) see [`docs/architecture.md`](docs/architecture.md).
 
 ## Current status
 
