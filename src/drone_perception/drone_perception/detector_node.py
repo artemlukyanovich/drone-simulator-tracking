@@ -12,6 +12,7 @@ publish /perception/target (drone_interfaces/Target). Опционально п�
 """
 
 import math
+import time
 
 import cv2
 import rclpy
@@ -19,13 +20,18 @@ from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 
 from drone_interfaces.msg import Target
 
 from drone_perception.detector import ObjectDetector
 from drone_perception.reid import ObjectEmbedder, TargetIdentity
 from drone_perception.reid.embedder import crop_bbox
+
+# Сглаживание живых метрик оверлея (M6, 9A): мгновенные FPS/латентность прыгают кадр к
+# кадру, EMA даёт читаемое число. Это display-константа (как пороги цвета батареи ниже),
+# не поведение управления — в конфиг не выносим.
+_METRICS_EMA_ALPHA = 0.2
 
 
 class DetectorNode(Node):
@@ -155,17 +161,40 @@ class DetectorNode(Node):
         battery_topic = self.declare_parameter(
             'battery_topic', '/follower/battery_remaining_s').value
         self.create_subscription(Float32, battery_topic, self._on_battery, 10)
+        # M6 (9A): FSM-состояние от follower'а — для строки метрик на оверлее. None =
+        # follower ещё не публикует. Дефолт топика совпадает с публикацией follower'а.
+        self._fsm_state = None
+        state_topic = self.declare_parameter('state_topic', '/follower/state').value
+        self.create_subscription(String, state_topic, self._on_state, 10)
+        # M6 (9A): живые метрики. latency_ms — время инференса (прямой прокси GPU-нагрузки),
+        # fps — фактическая частота обработанных кадров (до троттлинга 9B = частота камеры).
+        # Обе сглажены EMA; база «до» для прохода по нагрузке (9B).
+        self._fps = None
+        self._latency_ms = None
+        self._last_frame_t = None
 
         self.get_logger().info(
             f"detector_node готов: {self._image_topic} → {self._target_topic}"
             f" (классы={self._target_classes or 'любые'}, выбор={self._selection})")
 
     def _on_image(self, msg: Image):
+        # M6 (9A): FPS = частота прихода/обработки кадров (мгновенная, сглаженная EMA).
+        now = time.perf_counter()
+        if self._last_frame_t is not None:
+            dt = now - self._last_frame_t
+            if dt > 0.0:
+                self._fps = self._ema(self._fps, 1.0 / dt)
+        self._last_frame_t = now
+
         # ROS rgb8 → OpenCV BGR (иначе YOLO деградирует, см. §6).
         frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         height, width = frame.shape[:2]
 
+        # M6 (9A): латентность инференса (YOLO+трекинг) — прямой прокси GPU-нагрузки, база
+        # «до» для оптимизации 9B.
+        t0 = time.perf_counter()
         detections = self._detector.detect(frame)
+        self._latency_ms = self._ema(self._latency_ms, (time.perf_counter() - t0) * 1000.0)
         # Фильтр по целевым классам (пусто → берём все).
         if self._target_classes:
             detections = [d for d in detections if d[1] in self._target_classes]
@@ -462,6 +491,16 @@ class DetectorNode(Node):
     def _on_battery(self, msg: Float32):
         self._battery_remaining = float(msg.data)
 
+    def _on_state(self, msg: String):
+        self._fsm_state = msg.data
+
+    @staticmethod
+    def _ema(prev, value):
+        """EMA-сглаживание живой метрики; первый замер задаёт начальное значение."""
+        if prev is None:
+            return value
+        return _METRICS_EMA_ALPHA * value + (1.0 - _METRICS_EMA_ALPHA) * prev
+
     def _publish_overlay(self, frame, detections, target, distance_m, width, height, header):
         # Центр кадра (цель наведения) — зелёный крест.
         cx0, cy0 = width // 2, height // 2
@@ -523,6 +562,20 @@ class DetectorNode(Node):
             (tw, _), _ = cv2.getTextSize(btxt, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             cv2.putText(frame, btxt, (width - tw - 8, 24),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, bcol, 2, cv2.LINE_AA)
+
+        # M6 (9A): строка живых метрик в левом верхнем углу — FSM (от follower'а), FPS и
+        # латентность инференса. FSM красится по состоянию (TRACK зелёный, поиск/RTL красный,
+        # промежуточные жёлтые) — видно поведение прямо на видео; FPS/мс — база для 9B.
+        state = self._fsm_state if self._fsm_state is not None else '?'
+        fps_txt = f'{self._fps:.0f}' if self._fps is not None else '--'
+        lat_txt = f'{self._latency_ms:.0f}' if self._latency_ms is not None else '--'
+        mcol = {
+            'TRACK': (0, 200, 0),
+            'SEARCH': (0, 0, 255), 'RTL': (0, 0, 255),
+            'LOST': (0, 165, 255), 'HOLD': (0, 165, 255),
+        }.get(state, (220, 220, 220))
+        cv2.putText(frame, f'FSM: {state} | {fps_txt} FPS | inf {lat_txt} ms', (8, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, mcol, 2, cv2.LINE_AA)
 
         out = self._bridge.cv2_to_imgmsg(frame, encoding='bgr8')
         out.header = header

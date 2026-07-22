@@ -25,7 +25,7 @@ from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 
 from px4_msgs.msg import (OffboardControlMode, TrajectorySetpoint,
                           VehicleCommand, VehicleLocalPosition, VehicleStatus)
@@ -110,6 +110,11 @@ class FollowerNode(Node):
         battery_topic = self.declare_parameter(
             'battery_topic', '/follower/battery_remaining_s').value
         self._battery_pub = self.create_publisher(Float32, battery_topic, 10)
+        # M6 (9A): текущее состояние FSM (строка) для оверлея детектора. Тот же приём, что и
+        # батарея — отдельный топик, ноды не импортируют друг друга (§7). Дефолт совпадает с
+        # подпиской детектора; в .yaml не выносим, чтобы не плодить ручки (как battery_topic).
+        state_topic = self.declare_parameter('state_topic', '/follower/state').value
+        self._state_pub = self.create_publisher(String, state_topic, 10)
 
         self.create_subscription(
             VehicleLocalPosition, '/fmu/out/vehicle_local_position',
@@ -168,6 +173,7 @@ class FollowerNode(Node):
     # --- Основной offboard-цикл ---
     def _on_tick(self):
         self._publish_battery()   # M5: остаток «батареи» для оверлея (шлём всегда, даже в RTL)
+        self._publish_state()     # M6 (9A): состояние FSM для оверлея (тоже всегда, даже в RTL)
 
         # M5: после срабатывания фейлсейфа управление отдано штатному RTL PX4. Ничего НЕ
         # стримим — иначе поток offboard-setpoint'ов перетянул бы режим обратно и подрался
@@ -404,6 +410,12 @@ class FollowerNode(Node):
         msg = Float32()
         msg.data = float(remaining)
         self._battery_pub.publish(msg)
+
+    def _publish_state(self):
+        """Опубликовать текущее состояние FSM (строка) для оверлея детектора (M6, 9A)."""
+        msg = String()
+        msg.data = self._state
+        self._state_pub.publish(msg)
 
     def _trigger_rtl(self, reason):
         """Уйти в терминальный RTL: один раз командуем PX4 возврат, дальше offboard-поток
