@@ -95,6 +95,7 @@ class DetectorNode(Node):
             device=device,
             tracking=tracking,
             tracker=tracker,
+            logger=self.get_logger(),
         )
 
         # track_id залоченной цели (Ф4-2). Это ВСПОМОГАТЕЛЬНОЕ, быстрое звено: пока трекер
