@@ -24,6 +24,10 @@ Learn to **control a system**, not just recognize an image, and work close to re
 stacks. `project_1` answers *"what do I see"*; this project answers *"how do I move based
 on what I see"*.
 
+## Demo & Workflow
+
+See the [Google Drive folder](https://drive.google.com/drive/folders/1tyctrNiZDFJz6eq3b_x893x_BdJzr8rb?usp=sharing) demos and workflow examples
+
 ## Tech stack
 
 - **Gazebo** (gz-sim) — physics + sensors
