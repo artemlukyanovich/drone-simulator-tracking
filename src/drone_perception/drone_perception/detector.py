@@ -37,6 +37,7 @@ class ObjectDetector:
         tracking: bool = False,
         tracker: str = "bytetrack.yaml",
         logger=None,
+        cpu_fallback: bool = False,
     ) -> None:
         """Args:
         model_path: путь/имя весов YOLO (.pt). Если файла нет, ultralytics
@@ -47,12 +48,19 @@ class ObjectDetector:
         tracker: конфиг трекера ultralytics ("bytetrack.yaml" | "botsort.yaml").
         logger: rclpy-логгер ноды (см. reid/embedder.py) — сообщения об откате на CPU
             должны попадать в ROS-лог, а не в stdout. None → print (юнит-тесты вне ноды).
+        cpu_fallback: при нехватке VRAM на cuda молча откатиться на cpu вместо падения ноды.
+            По умолчанию False: CPU-инференс YOLOv8n в 9-10× медленнее cuda (замерено
+            2026-07-23) — тихая деградация даёт рваное видео и портит демо незаметно для
+            оператора. Явное падение ноды заметно сразу и указывает на реальную причину
+            (нехватка VRAM, обычно из-за одновременной записи через OBS). True — включить
+            обратно, если важнее устойчивость (не-демо прогоны, отладка).
         """
         self.model_path = str(model_path)
         self.confidence_threshold = confidence_threshold
         self.tracking = tracking
         self.tracker = tracker
         self._log = logger
+        self._cpu_fallback = cpu_fallback
         self.device = self._resolve_device(device)
 
         # task="detect" объявляем явно (детекция-онли) — глушит варнинг угадывания
@@ -83,6 +91,8 @@ class ObjectDetector:
         Returns:
             [((x1, y1, x2, y2), class_name, confidence, track_id|None), ...]
         """
+        if not self._cpu_fallback:
+            return self._run(frame_bgr)
         try:
             return self._run(frame_bgr)
         except Exception as exc:                              # noqa: BLE001

@@ -50,6 +50,7 @@ class DetectorNode(Node):
         model_path = self.declare_parameter('model_path', 'yolov8n.pt').value
         confidence = self.declare_parameter('confidence_threshold', 0.5).value
         device = self.declare_parameter('device', 'cuda').value
+        cpu_fallback = bool(self.declare_parameter('cpu_fallback', False).value)
         # Какие классы считаем целью (COCO-имена). Пусто → любой класс.
         self._target_classes = list(self.declare_parameter('target_classes', ['person']).value)
         # Критерий выбора одной цели из нескольких: "largest" | "closest".
@@ -96,6 +97,7 @@ class DetectorNode(Node):
             tracking=tracking,
             tracker=tracker,
             logger=self.get_logger(),
+            cpu_fallback=cpu_fallback,
         )
 
         # track_id залоченной цели (Ф4-2). Это ВСПОМОГАТЕЛЬНОЕ, быстрое звено: пока трекер
